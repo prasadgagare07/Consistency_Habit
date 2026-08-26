@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>STEADY</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070a0e;
+  --bg2:#0c1116;
+  --surface:rgba(255,255,255,0.045);
+  --line:rgba(255,255,255,0.09);
+  --text:#eef1f0;
+  --text-dim:#8b9591;
+  --text-faint:#525c58;
+  --gold:#e0b45c;
+  --calm:#6fd3a8;
+  --warn:#c96a6a;
+  --r:20px;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{height:100%;}
+body{
+  margin:0; min-height:100%;
+  background:
+    radial-gradient(ellipse 700px 500px at 50% -8%, rgba(224,180,92,0.10), transparent 60%),
+    radial-gradient(ellipse 800px 600px at 50% 105%, rgba(111,211,168,0.06), transparent 55%),
+    var(--bg);
+  color:var(--text);
+  font-family:'Inter',system-ui,sans-serif;
+  overflow-x:hidden;
+}
+.serif{font-family:'Fraunces',serif;}
+.mono{font-family:'JetBrains Mono',monospace;}
+
+header{ text-align:center; padding:30px 20px 4px; position:relative; z-index:2;}
+header .eyebrow{ font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.3em; color:var(--text-faint); text-transform:uppercase;}
+header h1{ font-family:'Fraunces',serif; font-weight:600; font-size:clamp(28px,7.5vw,38px); margin:8px 0 4px; letter-spacing:.01em;}
+header p{ color:var(--text-dim); font-size:13px; font-style:italic; margin:0;}
+.settings-btn{ position:fixed; top:16px; right:16px; z-index:60; width:40px; height:40px; border-radius:50%; background:var(--surface); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; color:var(--text-dim); cursor:pointer;}
+.settings-btn:active{ transform:scale(.92); }
+
+/* MODE SWITCHER */
+#modeswitch{ display:flex; justify-content:center; gap:8px; margin:16px auto 4px; position:relative; z-index:5; padding:0 20px; }
+.modebtn{
+  font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+  padding:8px 13px; border-radius:20px; border:1px solid var(--line); background:var(--surface);
+  color:var(--text-faint); cursor:pointer;
+}
+.modebtn.active{ background:var(--gold); color:#1a1206; border-color:transparent; font-weight:700; }
+
+/* HERO STAGE */
+#stage{ position:relative; height:300px; margin-top:8px; z-index:2; overflow:hidden;}
+#stageCanvas{ position:absolute; inset:0; width:100%; height:100%; }
+.stage-center{ position:absolute; left:0; right:0; z-index:3; text-align:center; pointer-events:none; }
+.stage-fund-label{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.2em; color:var(--text-faint); text-transform:uppercase; margin-bottom:4px;}
+.stage-fund{ font-family:'Fraunces',serif; font-size:clamp(26px,8vw,36px); font-weight:600; color:var(--gold);}
+.stage-streak{ font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--text-dim); margin-top:4px;}
+.stage-streak b{ color:var(--calm); }
+.stage-warn{ font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:var(--warn); text-transform:uppercase; margin-top:6px; opacity:0; transition:opacity .3s ease;}
+.stage-warn.show{ opacity:.9; }
+
+.statrow{ display:flex; justify-content:center; gap:0; max-width:420px; margin:10px auto 22px; position:relative; z-index:2;}
+.statrow .s{ flex:1; text-align:center; padding:0 8px; border-right:1px solid var(--line);}
+.statrow .s:last-child{ border-right:none; }
+.statrow .s b{ display:block; font-family:'JetBrains Mono',monospace; font-size:17px; }
+.statrow .s span{ font-size:9.5px; letter-spacing:.14em; color:var(--text-faint); text-transform:uppercase; }
+
+#projwrap{ max-width:480px; margin:0 auto 24px; padding:0 20px; position:relative; z-index:2;}
+.panel{ background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:18px; }
+.panel h3{ font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--text-faint); margin:0 0 10px; font-weight:500;}
+#projCanvas{ width:100%; height:130px; display:block; }
+.proj-foot{ display:flex; justify-content:space-between; margin-top:8px; font-size:11px; color:var(--text-dim); }
+.proj-foot b{ color:var(--gold); font-family:'JetBrains Mono',monospace; }
+
+#checkinwrap{ max-width:480px; margin:0 auto 24px; padding:0 20px; position:relative; z-index:2;}
+.logbtn{ width:100%; padding:16px; border-radius:16px; border:none; cursor:pointer; background:linear-gradient(135deg, var(--gold), #c98f3e); color:#1a1206; font-family:'Inter',sans-serif; font-weight:600; font-size:15px;}
+.logbtn:active{ transform:scale(.98); }
+.checkin-form{ margin-top:14px; }
+.field{ margin-bottom:12px; }
+.field label{ display:block; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin-bottom:6px;}
+.field input{ width:100%; padding:11px 12px; border-radius:10px; background:rgba(255,255,255,0.05); border:1px solid var(--line); color:var(--text); font-size:14px; font-family:'JetBrains Mono',monospace;}
+.rule-toggle{ display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-radius:12px; background:rgba(255,255,255,0.04); border:1px solid var(--line); margin-bottom:12px;}
+.rule-toggle span{ font-size:13px; }
+.toggle{ width:44px; height:25px; border-radius:20px; background:rgba(255,255,255,0.12); position:relative; cursor:pointer; flex-shrink:0;}
+.toggle i{ position:absolute; top:2px; left:2px; width:21px; height:21px; border-radius:50%; background:#fff; transition:transform .2s ease;}
+.toggle.on{ background:var(--calm); }
+.toggle.on i{ transform:translateX(19px); }
+.btn{ font-family:'Inter',sans-serif; font-size:13.5px; font-weight:600; padding:12px 16px; border-radius:11px; border:1px solid var(--line); background:rgba(255,255,255,0.06); color:var(--text); cursor:pointer; width:100%;}
+.btn.primary{ background:var(--calm); color:#04120b; border-color:transparent; }
+.modal-actions{ display:flex; gap:10px; margin-top:16px; }
+
+#msg{ max-width:480px; margin:0 auto 24px; padding:0 20px; position:relative; z-index:2; text-align:center;}
+#msg p{ font-family:'Fraunces',serif; font-style:italic; font-size:14px; color:var(--text-dim); line-height:1.5; margin:0;}
+
+#history{ max-width:480px; margin:0 auto 50px; padding:0 20px; position:relative; z-index:2;}
+#history h3{ font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--text-faint); margin:0 0 12px; text-align:center;}
+.hrow{ display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px;}
+.hrow:last-child{ border-bottom:none; }
+.hdot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.hdate{ color:var(--text-faint); font-family:'JetBrains Mono',monospace; font-size:11px; width:60px; flex-shrink:0;}
+.hnote{ color:var(--text-dim); flex:1; font-size:12px; }
+.hpnl{ font-family:'JetBrains Mono',monospace; font-size:12.5px; }
+.emptyh{ text-align:center; color:var(--text-faint); font-size:12px; padding:16px 0; }
+
+footer{ text-align:center; padding:10px 20px 50px; color:var(--text-faint); font-size:10.5px; letter-spacing:.1em; position:relative; z-index:2;}
+
+.modal-veil{ position:fixed; inset:0; background:rgba(4,5,9,.72); backdrop-filter:blur(4px); z-index:200; opacity:0; pointer-events:none; transition:opacity .25s ease;}
+.modal-veil.open{ opacity:1; pointer-events:all;}
+.modal{ position:fixed; left:50%; bottom:0; transform:translate(-50%,100%); width:min(460px,100%); max-height:88vh; overflow-y:auto; background:var(--bg2); border:1px solid var(--line); border-radius:22px 22px 0 0; z-index:201; padding:22px 20px 30px; transition:transform .35s cubic-bezier(.2,.8,.2,1);}
+@media(min-width:640px){ .modal{ bottom:auto; top:50%; transform:translate(-50%,-45%); border-radius:20px; } }
+.modal-veil.open .modal{ transform:translate(-50%,0); }
+@media(min-width:640px){ .modal-veil.open .modal{ transform:translate(-50%,-50%); } }
+.modal h3.title{ font-family:'Fraunces',serif; margin:0 0 6px; font-size:20px; font-weight:600;}
+.modal p.sub{ color:var(--text-dim); font-size:12.5px; margin:0 0 18px; }
+.settingsrow{ display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid var(--line);}
+.settingsrow:last-child{ border-bottom:none; }
+
+.burst{ position:fixed; inset:0; z-index:300; display:flex; align-items:center; justify-content:center; pointer-events:none;}
+.burst-text{ font-family:'Fraunces',serif; font-weight:700; font-size:26px; text-align:center; color:#fff; opacity:0; animation:burstIn 2.6s ease forwards; text-shadow:0 0 30px currentColor;}
+.burst-text small{ display:block; font-family:'JetBrains Mono',monospace; font-size:11.5px; letter-spacing:.16em; margin-top:10px; font-weight:500;}
+@keyframes burstIn{ 0%{opacity:0; transform:scale(.5);} 18%{opacity:1; transform:scale(1.12);} 32%{transform:scale(1);} 86%{opacity:1;} 100%{opacity:0;} }
+#confettiCanvas{ position:fixed; inset:0; z-index:290; pointer-events:none; }
+@keyframes shakeIt{ 0%,100%{transform:translate(0,0);} 20%{transform:translate(-6px,3px);} 40%{transform:translate(5px,-4px);} 60%{transform:translate(-4px,-3px);} 80%{transform:translate(4px,4px);} }
+body.shake{ animation:shakeIt .45s ease; }
+
+/* PERSISTENT DAY STATUS BANNER */
+.daybanner{ max-width:480px; margin:0 auto 24px; padding:0 20px; position:relative; z-index:2; }
+.daybanner .card{ border-radius:var(--r); padding:20px; text-align:center; border:1px solid var(--line); position:relative; overflow:hidden;}
+.daybanner.win .card{ background:linear-gradient(160deg, rgba(224,180,92,0.16), rgba(111,211,168,0.10)); border-color:rgba(224,180,92,0.4); box-shadow:0 0 40px rgba(224,180,92,0.12);}
+.daybanner.lose .card{ background:linear-gradient(160deg, rgba(201,106,106,0.14), rgba(0,0,0,0.2)); border-color:rgba(201,106,106,0.4);}
+.daybanner .eyebrow2{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.22em; text-transform:uppercase; margin-bottom:8px;}
+.daybanner.win .eyebrow2{ color:var(--gold); }
+.daybanner.lose .eyebrow2{ color:var(--warn); }
+.daybanner .big{ font-family:'Fraunces',serif; font-weight:600; font-size:26px; margin-bottom:6px;}
+.daybanner.win .big{ color:#fff; }
+.daybanner.lose .big{ color:#f0c9c9; }
+.daybanner .sub2{ font-size:12.5px; color:var(--text-dim); line-height:1.5; }
+.daybanner .crackline{ position:absolute; inset:0; opacity:.5; background:
+  linear-gradient(105deg, transparent 48%, rgba(255,255,255,.5) 49%, transparent 51%),
+  linear-gradient(70deg, transparent 60%, rgba(255,255,255,.3) 61%, transparent 63%);
+  pointer-events:none;}
+</style>
+</head>
+<body>
+
+<div class="settings-btn" id="openSettings">⚙</div>
+
+<header>
+  <div class="eyebrow">Steady</div>
+  <h1 class="serif">Consistency Compounds</h1>
+  <p>Greed compounds nothing. One clean day at a time.</p>
+</header>
+
+<div id="modeswitch">
+  <button class="modebtn" data-mode="ascent">Ascent</button>
+  <button class="modebtn" data-mode="storm">Storm</button>
+  <button class="modebtn" data-mode="vault">Vault City</button>
+</div>
+
+<div id="stage">
+  <canvas id="stageCanvas"></canvas>
+  <div class="stage-center" id="stageCenter" style="top:14px;">
+    <div class="stage-fund-label">Current Fund</div>
+    <div class="stage-fund mono" id="stageFund">₹0</div>
+    <div class="stage-streak">Day <b id="stageStreak">0</b> / <span id="stageStreakGoal">0</span></div>
+    <div class="stage-warn" id="stageWarn">forcing it now breaks the climb</div>
+  </div>
+</div>
+
+<div class="statrow">
+  <div class="s"><b id="statBest" style="color:var(--gold)">0</b><span>Best Streak</span></div>
+  <div class="s"><b id="statTarget">₹0</b><span>Daily Target</span></div>
+  <div class="s"><b id="statDays">0</b><span>Days Logged</span></div>
+</div>
+
+<div id="projwrap">
+  <div class="panel">
+    <h3>Projected Fund If You Stay Steady</h3>
+    <canvas id="projCanvas"></canvas>
+    <div class="proj-foot"><span>Today</span><b id="projEnd">₹0</b></div>
+  </div>
+</div>
+
+<div class="daybanner" id="dayBanner" style="display:none;"></div>
+
+<div id="checkinwrap">
+  <button class="logbtn" id="logBtn">Log Today</button>
+  <div class="checkin-form" id="checkinForm" style="display:none;">
+    <div class="field"><label>Today's P/L (+ or −)</label><input id="in_pnl" type="number" placeholder="e.g. 1200 or -400"></div>
+    <div class="rule-toggle">
+      <span>I followed my rules — no overtrade</span>
+      <div class="toggle on" id="in_rules"><i></i></div>
+    </div>
+    <div class="field"><label>Note (optional)</label><input id="in_note" placeholder="one honest line"></div>
+    <div class="modal-actions">
+      <button class="btn" id="cancelCheckin">Cancel</button>
+      <button class="btn primary" id="saveCheckin">Save Day</button>
+    </div>
+  </div>
+</div>
+
+<div id="msg"><p id="msgText"></p></div>
+
+<div id="history">
+  <h3>Recent Days</h3>
+  <div id="historyList"></div>
+</div>
+
+<footer>STEADY · your future is built one boring day at a time</footer>
+<canvas id="confettiCanvas"></canvas>
+
+<div class="modal-veil" id="setupVeil">
+  <div class="modal">
+    <h3 class="title serif">Set Your Baseline</h3>
+    <p class="sub">This isn't a prediction. It's the boring plan you keep coming back to.</p>
+    <div class="field"><label>Current Fund (₹)</label><input id="s_fund" type="number" placeholder="e.g. 50000"></div>
+    <div class="field"><label>Daily Target (₹)</label><input id="s_target" type="number" placeholder="e.g. 500"></div>
+    <div class="field"><label>Streak Goal (days)</label><input id="s_streakgoal" type="number" placeholder="e.g. 30"></div>
+    <div class="modal-actions">
+      <button class="btn" id="cancelSetup">Cancel</button>
+      <button class="btn primary" id="saveSetup">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-veil" id="settingsVeil">
+  <div class="modal">
+    <h3 class="title serif">Settings</h3>
+    <div class="settingsrow"><div>Edit fund / target / streak goal</div><button class="btn" id="editBaseline" style="width:auto;">Edit</button></div>
+    <div class="settingsrow"><div>Reset everything</div><button class="btn" id="resetBtn" style="width:auto; border-color:rgba(255,100,100,.4); color:#ff8080;">Reset</button></div>
+    <div class="modal-actions"><button class="btn primary" id="closeSettings">Done</button></div>
+  </div>
+</div>
+
+<script>
+/* ================= STEADY v2 — three switchable cinematic hero modes ================= */
+
+const MESSAGES = {
+  intro: "Every steady day is a vote for the future you actually want.",
+  onTrackEarly: "No rush. The visual grows slower than you'd like — that's the point.",
+  onTrackMid: "This is what discipline looks like from the outside: quiet, unremarkable, working.",
+  onTrackLate: "You're close. Closer days are exactly when the urge to force it grows — don't.",
+  reset: "Reset. Today doesn't erase your progress — it's information. Begin again at day one, same target.",
+  goalHit: "You didn't chase a big day. You built a habit that outlives one. That's rare.",
+};
+
+let state = null;
+let fx = { type:null, t:0 }; // transient effect after a check-in: {type:'success'|'reset', t: seconds since triggered}
+
+function defaultState(){
+  return {
+    fund:0, dailyTarget:0, streakGoal:0,
+    currentStreak:0, bestStreak:0,
+    entries:[], setupDone:false,
+    mode:'storm',
+    lastLoggedDate:null, todayResult:null, lastStreakBeforeReset:0,
+  };
+}
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+function loadState(){
+  try{ const raw = localStorage.getItem('steady:state'); state = raw ? JSON.parse(raw) : defaultState(); }
+  catch(e){ state = defaultState(); }
+  if(!state.mode) state.mode = 'storm';
+  setActiveMode(state.mode, false);
+  if(!state.setupDone) openSetup(true);
+  render();
+}
+function saveState(){ try{ localStorage.setItem('steady:state', JSON.stringify(state)); }catch(e){ console.error(e); } }
+
+function fmtMoney(n){ return '₹' + Math.round(n).toLocaleString('en-IN'); }
+function escapeHtml(s){ const p=document.createElement('p'); p.textContent=s||''; return p.innerHTML; }
+function hexToRgb(h){ h=h.replace('#',''); return {r:parseInt(h.substring(0,2),16), g:parseInt(h.substring(2,4),16), b:parseInt(h.substring(4,6),16)}; }
+function hexA(hex,a){ const c=hexToRgb(hex); return `rgba(${c.r},${c.g},${c.b},${a})`; }
+function mixColor(a,b,t){ const pa=hexToRgb(a), pb=hexToRgb(b); const r=Math.round(pa.r+(pb.r-pa.r)*t), g=Math.round(pa.g+(pb.g-pa.g)*t), bl=Math.round(pa.b+(pb.b-pa.b)*t); return `rgb(${r},${g},${bl})`; }
+
+/* ---------------- MODE SWITCH ---------------- */
+document.querySelectorAll('.modebtn').forEach(btn=>{
+  btn.onclick = ()=>{
+    state.mode = btn.dataset.mode;
+    setActiveMode(state.mode, true);
+    saveState();
+  };
+});
+function setActiveMode(mode, adjustLabel){
+  document.querySelectorAll('.modebtn').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
+  document.getElementById('stageCenter').style.top = mode==='vault' ? '10px' : '20px';
+}
+
+/* ---------------- RENDER (shared UI) ---------------- */
+function render(){
+  document.getElementById('stageFund').textContent = fmtMoney(state.fund);
+  document.getElementById('stageStreak').textContent = state.currentStreak;
+  document.getElementById('stageStreakGoal').textContent = state.streakGoal || '—';
+  document.getElementById('statBest').textContent = state.bestStreak;
+  document.getElementById('statTarget').textContent = fmtMoney(state.dailyTarget);
+  document.getElementById('statDays').textContent = state.entries.length;
+
+  const pct = state.streakGoal ? Math.min(1, state.currentStreak/state.streakGoal) : 0;
+  let msg = MESSAGES.intro;
+  if(state.entries.length){
+    if(pct>=1) msg = MESSAGES.goalHit;
+    else if(pct>0.66) msg = MESSAGES.onTrackLate;
+    else if(pct>0.25) msg = MESSAGES.onTrackMid;
+    else msg = MESSAGES.onTrackEarly;
+  }
+  document.getElementById('msgText').textContent = msg;
+  document.getElementById('stageWarn').classList.toggle('show', pct>0.85 && pct<1);
+
+  renderHistory();
+  renderProjection();
+  renderDayBanner();
+}
+
+function renderDayBanner(){
+  const banner = document.getElementById('dayBanner');
+  const loggedToday = state.lastLoggedDate === todayStr();
+  document.getElementById('logBtn').style.display = loggedToday ? 'none' : 'block';
+  document.getElementById('checkinForm').style.display = 'none';
+  if(!loggedToday){ banner.style.display='none'; banner.className='daybanner'; return; }
+
+  banner.style.display='block';
+  if(state.todayResult === 'success'){
+    banner.className = 'daybanner win';
+    banner.innerHTML = `<div class="card">
+      <div class="eyebrow2">Day ${state.currentStreak} Secured</div>
+      <div class="big">Streak alive. Don't touch it again today.</div>
+      <div class="sub2">You're ${state.streakGoal ? (state.streakGoal - state.currentStreak) : '—'} day(s) from goal. Come back tomorrow — forcing another trade today only risks what you just built.</div>
+    </div>`;
+  } else {
+    banner.className = 'daybanner lose';
+    banner.innerHTML = `<div class="card">
+      <div class="crackline"></div>
+      <div class="eyebrow2">Streak Broken</div>
+      <div class="big">Back to Day 0.</div>
+      <div class="sub2">You had built ${state.lastStreakBeforeReset} day(s). That's gone for this run — but the fund and the plan aren't. The only mistake now would be trying to win it back today. Rebuild starts tomorrow.</div>
+    </div>`;
+  }
+}
+function renderHistory(){
+  const list = document.getElementById('historyList');
+  if(!state.entries.length){ list.innerHTML = '<div class="emptyh">No days logged yet — your first honest entry starts the streak.</div>'; return; }
+  const recent = [...state.entries].reverse().slice(0,14);
+  list.innerHTML = recent.map(e=>{
+    const good = e.followedRules && e.pnl>=0;
+    const color = good ? 'var(--calm)' : (e.followedRules ? '#5b6b72' : 'var(--warn)');
+    const sign = e.pnl>=0 ? '+' : '';
+    return `<div class="hrow">
+      <div class="hdot" style="background:${color}"></div>
+      <div class="hdate">${e.date}</div>
+      <div class="hnote">${e.followedRules?'Followed rules':'Broke rules'}${e.note?' · '+escapeHtml(e.note):''}</div>
+      <div class="hpnl" style="color:${e.pnl>=0?'var(--calm)':'var(--warn)'}">${sign}${fmtMoney(e.pnl)}</div>
+    </div>`;
+  }).join('');
+}
+function renderProjection(){
+  const canvas = document.getElementById('projCanvas');
+  const dpr = Math.min(window.devicePixelRatio||1,2);
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth-36;
+  canvas.width = w*dpr; canvas.height = 130*dpr;
+  canvas.style.width=w+'px'; canvas.style.height='130px';
+  const ctx = canvas.getContext('2d'); ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,130);
+  const days = Math.max(state.streakGoal,5);
+  const points = []; for(let i=0;i<=days;i++) points.push(state.fund + state.dailyTarget*i);
+  const maxV = Math.max(...points,1), minV = Math.min(...points,0), pad=6;
+  ctx.beginPath();
+  points.forEach((v,i)=>{ const x=pad+(i/days)*(w-pad*2), y=122-((v-minV)/(maxV-minV||1))*108; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
+  const grad = ctx.createLinearGradient(0,0,w,0); grad.addColorStop(0,'#e0b45c'); grad.addColorStop(1,'#6fd3a8');
+  ctx.strokeStyle=grad; ctx.lineWidth=2.4; ctx.lineJoin='round'; ctx.stroke();
+  const ti = Math.min(state.currentStreak,days);
+  const tx = pad+(ti/days)*(w-pad*2), ty = 122-((points[ti]-minV)/(maxV-minV||1))*108;
+  ctx.beginPath(); ctx.arc(tx,ty,4,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+  ctx.restore();
+  document.getElementById('projEnd').textContent = fmtMoney(points[points.length-1]);
+}
+
+/* ---------------- STAGE ANIMATION LOOP ---------------- */
+let stageT = 0;
+const ascentParts = Array.from({length:40},()=>({x:Math.random(),y:Math.random(),spd:0.3+Math.random()*0.6,len:8+Math.random()*20}));
+const stormParts = Array.from({length:70},()=>({a:Math.random()*Math.PI*2, rad:20+Math.random()*90, spd:(0.006+Math.random()*0.01), r:1+Math.random()*2, ph:Math.random()*10, scatterVX:0, scatterVY:0, scattered:false}));
+let vaultLights = [];
+
+function stageFrame(){
+  stageT += 0.016;
+  if(fx.type){ fx.t += 0.016; if(fx.t>2.4) fx.type=null; }
+  const canvas = document.getElementById('stageCanvas');
+  const dpr = Math.min(window.devicePixelRatio||1,2);
+  canvas.width = canvas.clientWidth*dpr; canvas.height = canvas.clientHeight*dpr;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save(); ctx.scale(dpr,dpr);
+  const pct = state.streakGoal ? Math.min(1,state.currentStreak/state.streakGoal) : 0;
+  const loggedToday = state.lastLoggedDate === todayStr();
+  const persistent = loggedToday ? state.todayResult : null; // 'success' | 'reset' | null, lasts all day
+
+  if(state.mode==='ascent') drawAscent(ctx,w,h,pct,persistent);
+  else if(state.mode==='storm') drawStorm(ctx,w,h,pct,persistent);
+  else drawVault(ctx,w,h,pct,persistent);
+
+  ctx.restore();
+  requestAnimationFrame(stageFrame);
+}
+
+function drawAscent(ctx,w,h,pct,persistent){
+  // vertical shaft with light streaks
+  const shaftGrad = ctx.createLinearGradient(0,0,0,h);
+  shaftGrad.addColorStop(0,'rgba(224,180,92,0.05)'); shaftGrad.addColorStop(1,'rgba(111,211,168,0.03)');
+  ctx.fillStyle = shaftGrad; ctx.fillRect(w/2-70,0,140,h);
+
+  if(persistent==='success'){
+    ctx.fillStyle = hexA('#e0b45c', 0.06+0.03*Math.abs(Math.sin(stageT*1.5)));
+    ctx.fillRect(0,0,w,h);
+  } else if(persistent==='reset'){
+    ctx.fillStyle = 'rgba(30,10,10,0.18)'; ctx.fillRect(0,0,w,h);
+  }
+
+  const boost = (fx.type==='success' ? Math.max(0,1-fx.t/0.8) : 0) + (persistent==='success'?0.18:0);
+  ascentParts.forEach(p=>{
+    p.y -= (p.spd + boost*3) * 0.012;
+    if(p.y<-0.05) p.y = 1.05;
+    const x = w/2 + (p.x-0.5)*100;
+    const y = p.y*h;
+    ctx.strokeStyle = hexA('#e0b45c', 0.15+0.25*pct);
+    ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+p.len+boost*20); ctx.stroke();
+  });
+
+  // greed line near top
+  const greedY = h*0.14;
+  ctx.strokeStyle = hexA('#c96a6a', pct>0.85?0.55:0.18);
+  ctx.setLineDash([5,6]); ctx.lineWidth=1.2;
+  ctx.beginPath(); ctx.moveTo(0,greedY); ctx.lineTo(w,greedY); ctx.stroke(); ctx.setLineDash([]);
+
+  // capsule
+  const dropOffset = fx.type==='reset' ? Math.sin(Math.min(fx.t,1)*Math.PI)*14 : 0;
+  const capY = h - 40 - pct*(h-100) - boost*10 + dropOffset;
+  const capX = w/2;
+  const capGrad = ctx.createRadialGradient(capX-6,capY-6,2,capX,capY,22);
+  capGrad.addColorStop(0, mixColor('#8a6b2c','#e0b45c',Math.min(1,pct*1.3)));
+  capGrad.addColorStop(1, 'rgba(224,180,92,0.15)');
+  ctx.fillStyle = capGrad;
+  ctx.beginPath(); ctx.ellipse(capX,capY,16,20,0,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = hexA('#e0b45c',0.5); ctx.lineWidth=1.2; ctx.stroke();
+
+  if(boost>0){
+    for(let i=0;i<6;i++){
+      const a = Math.random()*Math.PI*2, r = Math.random()*10;
+      ctx.beginPath(); ctx.fillStyle = hexA('#fff', boost*0.5);
+      ctx.arc(capX+Math.cos(a)*r, capY+22+Math.random()*10, 1.6, 0, Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+function drawStorm(ctx,w,h,pct,persistent){
+  const cx=w/2, cy=h/2;
+  const tightness = (0.4 + pct*0.5) * (persistent==='success' ? 1.08 : persistent==='reset' ? 0.75 : 1);
+  const scattering = fx.type==='reset' ? Math.min(1,fx.t/1.2) : 0;
+  const reforming = fx.type==='reset' && fx.t>1.2 ? Math.min(1,(fx.t-1.2)/1.2) : 1;
+
+  const glow = ctx.createRadialGradient(cx,cy,0,cx,cy,120);
+  glow.addColorStop(0, hexA(mixColor('#2c8a6b','#6fd3a8',pct), 0.18+pct*0.15));
+  glow.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.beginPath(); ctx.arc(cx,cy,120,0,Math.PI*2); ctx.fillStyle=glow; ctx.fill();
+
+  stormParts.forEach(p=>{
+    p.a += p.spd * (fx.type==='success' ? 1.8 : 1);
+    let rad = p.rad * tightness;
+    if(fx.type==='reset'){
+      if(!p.scattered){ p.scatterVX=(Math.random()-0.5)*3; p.scatterVY=(Math.random()-0.5)*3; p.scattered=true; }
+      const scatterMix = scattering * (1-Math.max(0,fx.t-1.2)/1.2);
+      rad = rad*(1-scattering*reforming*0) + scattering*120;
+    } else { p.scattered=false; }
+    const x = cx + Math.cos(p.a)*rad;
+    const y = cy + Math.sin(p.a)*rad*0.62;
+    const alpha = 0.25+0.35*Math.abs(Math.sin(stageT*2+p.ph));
+    ctx.beginPath();
+    ctx.fillStyle = hexA(fx.type==='reset' && scattering>0.3 ? '#c96a6a' : mixColor('#2c8a6b','#6fd3a8',pct), alpha);
+    ctx.arc(x,y,p.r*1.4,0,Math.PI*2); ctx.fill();
+  });
+
+  // core
+  const coreR = 10+pct*10 + (persistent==='success'?2+Math.sin(stageT*3)*1.5:0);
+  const coreGrad = ctx.createRadialGradient(cx,cy,0,cx,cy,coreR);
+  coreGrad.addColorStop(0,'#fff'); coreGrad.addColorStop(1, hexA(persistent==='reset'?'#c96a6a':'#6fd3a8',0.6));
+  ctx.beginPath(); ctx.arc(cx,cy,coreR,0,Math.PI*2); ctx.fillStyle=coreGrad; ctx.fill();
+
+  if(persistent==='reset'){
+    ctx.fillStyle = 'rgba(30,10,10,0.12)'; ctx.fillRect(0,0,w,h);
+  }
+}
+
+function drawVault(ctx,w,h,pct,persistent){
+  const goal = Math.max(state.streakGoal,1);
+  const shownStreak = fx.type==='reset' ? Math.max(0, Math.round(state.currentStreak + (1-Math.min(1,fx.t/1.5))* (window._lastStreak||0))) : state.currentStreak;
+  const nBuildings = Math.max(3, Math.min(14, goal));
+  const baseY = h-6;
+  const bw = w/nBuildings;
+  const dim = fx.type==='reset';
+
+  // horizon fog / future skyline ghost (projection)
+  ctx.globalAlpha = 0.14;
+  for(let i=0;i<nBuildings;i++){
+    const bh = 30+((i+3)%7)*14;
+    ctx.fillStyle = '#e0b45c';
+    ctx.fillRect(i*bw+bw*0.2, baseY-bh-70, bw*0.6, bh);
+  }
+  ctx.globalAlpha = 1;
+
+  const activeCount = Math.round((shownStreak/goal)*nBuildings);
+  for(let i=0;i<nBuildings;i++){
+    const isLit = i < activeCount;
+    const bh = 26+((i*37)%9)*8 + (isLit?18:0);
+    const x = i*bw+bw*0.18, bw2 = bw*0.64;
+    ctx.fillStyle = isLit ? hexA('#1c2420',1) : 'rgba(255,255,255,0.025)';
+    ctx.fillRect(x, baseY-bh, bw2, bh);
+    // windows
+    const rows = Math.floor(bh/12), cols = Math.max(1,Math.floor(bw2/9));
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      const wx = x+4+c*9, wy = baseY-bh+6+r*12;
+      const lit = isLit && Math.random()>0.35 && !(dim && i===activeCount-1 && Math.random()>0.5);
+      ctx.fillStyle = lit ? hexA('#e0b45c', 0.5+0.4*Math.abs(Math.sin(stageT*2+i+r))) : 'rgba(255,255,255,0.03)';
+      ctx.fillRect(wx,wy,3,4);
+    }
+  }
+  if(persistent==='success'){
+    ctx.fillStyle = hexA('#e0b45c', 0.05+0.03*Math.abs(Math.sin(stageT*2)));
+    ctx.fillRect(0,0,w,h);
+  } else if(persistent==='reset'){
+    ctx.fillStyle = 'rgba(20,8,8,0.2)'; ctx.fillRect(0,0,w,h);
+  }
+  window._lastStreak = state.currentStreak;
+}
+
+/* ---------------- CHECK-IN ---------------- */
+document.getElementById('logBtn').onclick = ()=>{
+  document.getElementById('checkinForm').style.display='block';
+  document.getElementById('logBtn').style.display='none';
+};
+document.getElementById('cancelCheckin').onclick = ()=>{
+  document.getElementById('checkinForm').style.display='none';
+  document.getElementById('logBtn').style.display='block';
+};
+document.getElementById('in_rules').onclick = function(){ this.classList.toggle('on'); };
+
+document.getElementById('saveCheckin').onclick = ()=>{
+  const pnl = Number(document.getElementById('in_pnl').value)||0;
+  const followedRules = document.getElementById('in_rules').classList.contains('on');
+  const note = document.getElementById('in_note').value.trim();
+  const today = new Date().toISOString().slice(0,10);
+  const success = followedRules && pnl>=0;
+
+  window._lastStreak = state.currentStreak;
+  if(success){
+    state.currentStreak+=1; state.bestStreak=Math.max(state.bestStreak,state.currentStreak);
+    fx={type:'success',t:0}; state.todayResult='success';
+  } else {
+    state.lastStreakBeforeReset = state.currentStreak;
+    state.currentStreak=0; fx={type:'reset',t:0}; state.todayResult='reset';
+  }
+  state.lastLoggedDate = today;
+  state.fund += pnl;
+  state.entries.push({date:today, pnl, followedRules, note, streakDay:state.currentStreak});
+  saveState();
+  render();
+
+  if(success){
+    fireConfetti();
+    showBurst(state.streakGoal && state.currentStreak>=state.streakGoal ? 'STREAK GOAL REACHED' : 'DAY '+state.currentStreak+' SECURED',
+      fmtMoney(state.fund)+' · streak alive', 'gold');
+  } else {
+    fireShatter();
+    showBurst('STREAK BROKEN', 'Day 0 · '+state.lastStreakBeforeReset+' day streak lost', 'warn');
+  }
+};
+function showBurst(title,sub,tone){
+  const wrap = document.createElement('div'); wrap.className='burst';
+  const color = tone==='gold' ? 'var(--gold)' : 'var(--warn)';
+  wrap.innerHTML = `<div class="burst-text serif" style="color:${color}">${title}<small style="color:${color}">${sub}</small></div>`;
+  document.body.appendChild(wrap);
+  document.body.classList.add('shake');
+  setTimeout(()=>document.body.classList.remove('shake'), 500);
+  setTimeout(()=>wrap.remove(), 2800);
+}
+
+/* ---------------- BIG CELEBRATION / SHATTER OVERLAYS ---------------- */
+function fireConfetti(){
+  const canvas = document.getElementById('confettiCanvas');
+  const dpr = Math.min(window.devicePixelRatio||1,2);
+  canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr;
+  canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px';
+  const ctx = canvas.getContext('2d');
+  const colors = ['#e0b45c','#6fd3a8','#ffffff','#c98f3e'];
+  const parts = Array.from({length:140},()=>({
+    x:Math.random()*innerWidth, y:-20-Math.random()*innerHeight*0.4,
+    vy:2+Math.random()*4, vx:(Math.random()-0.5)*2.2, rot:Math.random()*Math.PI, vr:(Math.random()-0.5)*0.3,
+    w:4+Math.random()*5, h:7+Math.random()*8, c:colors[Math.floor(Math.random()*colors.length)]
+  }));
+  let start = performance.now();
+  function frame(now){
+    const elapsed = now-start;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save(); ctx.scale(dpr,dpr);
+    parts.forEach(p=>{
+      p.x+=p.vx; p.y+=p.vy; p.rot+=p.vr; p.vy+=0.03;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      ctx.fillStyle=p.c; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+      ctx.restore();
+    });
+    ctx.restore();
+    if(elapsed < 3200) requestAnimationFrame(frame);
+    else ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+  requestAnimationFrame(frame);
+}
+function fireShatter(){
+  const canvas = document.getElementById('confettiCanvas');
+  const dpr = Math.min(window.devicePixelRatio||1,2);
+  canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr;
+  canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px';
+  const ctx = canvas.getContext('2d');
+  const cx=innerWidth/2, cy=innerHeight/2;
+  const cracks = Array.from({length:14},()=>({a:Math.random()*Math.PI*2, len:0, maxLen:120+Math.random()*innerWidth*0.35, spd:6+Math.random()*8}));
+  let start = performance.now();
+  function frame(now){
+    const elapsed = now-start;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save(); ctx.scale(dpr,dpr);
+    ctx.fillStyle = `rgba(120,20,20,${Math.max(0,0.22*(1-elapsed/1400))})`;
+    ctx.fillRect(0,0,innerWidth,innerHeight);
+    cracks.forEach(c=>{
+      c.len = Math.min(c.maxLen, c.len+c.spd);
+      const x = cx+Math.cos(c.a)*c.len, y = cy+Math.sin(c.a)*c.len;
+      ctx.strokeStyle = `rgba(255,255,255,${Math.max(0,0.5*(1-elapsed/1800))})`;
+      ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,y); ctx.stroke();
+    });
+    ctx.restore();
+    if(elapsed < 1800) requestAnimationFrame(frame);
+    else ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------------- SETUP / SETTINGS ---------------- */
+function openSetup(first){
+  document.getElementById('s_fund').value = state.fund||'';
+  document.getElementById('s_target').value = state.dailyTarget||'';
+  document.getElementById('s_streakgoal').value = state.streakGoal||'';
+  document.getElementById('setupVeil').classList.add('open');
+  document.getElementById('cancelSetup').style.display = first?'none':'block';
+}
+document.getElementById('cancelSetup').onclick = ()=>document.getElementById('setupVeil').classList.remove('open');
+document.getElementById('saveSetup').onclick = ()=>{
+  state.fund = Number(document.getElementById('s_fund').value)||0;
+  state.dailyTarget = Number(document.getElementById('s_target').value)||0;
+  state.streakGoal = Number(document.getElementById('s_streakgoal').value)||0;
+  state.setupDone = true;
+  saveState();
+  document.getElementById('setupVeil').classList.remove('open');
+  render();
+};
+document.getElementById('openSettings').onclick = ()=>document.getElementById('settingsVeil').classList.add('open');
+document.getElementById('closeSettings').onclick = ()=>document.getElementById('settingsVeil').classList.remove('open');
+document.getElementById('editBaseline').onclick = ()=>{ document.getElementById('settingsVeil').classList.remove('open'); openSetup(false); };
+document.getElementById('resetBtn').onclick = ()=>{
+  if(!confirm('Reset everything — fund, streak, and history? This cannot be undone.')) return;
+  state = defaultState();
+  saveState();
+  document.getElementById('settingsVeil').classList.remove('open');
+  openSetup(true);
+  render();
+};
+
+window.addEventListener('resize', renderProjection);
+
+loadState();
+stageFrame();
+</script>
+</body>
+</html>
