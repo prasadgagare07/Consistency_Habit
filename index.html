@@ -1,5 +1,45 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Flame, TrendingUp, Wallet, CalendarDays, IndianRupee, Lock, Unlock, Target } from "lucide-react";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Consistency Fund</title>
+<style>
+  html, body, #root { margin: 0; padding: 0; min-height: 100vh; background: #062017; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ---------- tiny emoji-based icon components (replaces lucide-react) ---------- */
+const Icon = (glyph) => ({ size = 16 }) => React.createElement("span", { style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, glyph);
+const Flame = Icon("🔥");
+const Wallet = Icon("👛");
+const CalendarDays = Icon("📅");
+const IndianRupee = Icon("₹");
+const Lock = Icon("🔒");
+const Unlock = Icon("🔓");
+const Target = Icon("🎯");
+
+/* ---------- storage shim (replaces Claude's window.storage with localStorage) ---------- */
+const storage = {
+  get: async (key) => {
+    const v = localStorage.getItem(key);
+    return v !== null ? { key, value: v } : null;
+  },
+  set: async (key, value) => {
+    localStorage.setItem(key, value);
+    return { key, value };
+  },
+};
 
 /* ---------- helpers ---------- */
 const pad = (n) => String(n).padStart(2, "0");
@@ -24,12 +64,12 @@ const DEFAULT_STATE = {
   currentFund: 10000,
   dailyTarget: 5000,
   streakGoalDays: 10,
-  startDate: null, // set once the challenge begins
-  logs: [], // [{date:'YYYY-MM-DD', amount:number}] amount can be negative (loss)
+  startDate: null,
+  logs: [],
 };
 
 /* ================= main component ================= */
-export default function FundStreakTracker() {
+function FundStreakTracker() {
   const [data, setData] = useState(DEFAULT_STATE);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -42,11 +82,10 @@ export default function FundStreakTracker() {
     typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
 
-  /* ---- load ---- */
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get(STORAGE_KEY, false);
+        const res = await storage.get(STORAGE_KEY);
         if (res && res.value) setData(JSON.parse(res.value));
       } catch (e) {
         /* first run */
@@ -56,7 +95,6 @@ export default function FundStreakTracker() {
     })();
   }, []);
 
-  // tick every 15s so the 10pm gate + rolling 24h celebration window update live
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 15000);
     return () => clearInterval(t);
@@ -65,13 +103,12 @@ export default function FundStreakTracker() {
   const persist = useCallback(async (next) => {
     setData(next);
     try {
-      await window.storage.set(STORAGE_KEY, JSON.stringify(next), false);
+      await storage.set(STORAGE_KEY, JSON.stringify(next));
     } catch (e) {
       console.error("save failed", e);
     }
   }, []);
 
-  /* ---- derived ---- */
   const sortedLogs = [...data.logs].sort((a, b) => (a.date < b.date ? -1 : 1));
   const loggedFund = sortedLogs.reduce((s, l) => s + Number(l.amount || 0), 0);
 
@@ -97,8 +134,6 @@ export default function FundStreakTracker() {
   const todayLog = data.logs.find((l) => l.date === todayStr());
   const loggedToday = !!todayLog;
 
-  // celebration/punishment runs for a rolling 24h window from the moment of the LAST log,
-  // independent of calendar midnight — so a 10pm log stays lit until 10pm the next day.
   const lastLog = sortedLogs.length ? sortedLogs[sortedLogs.length - 1] : null;
   const lastLogAt = lastLog ? new Date(lastLog.loggedAt || `${lastLog.date}T12:00:00`) : null;
   const msSinceLastLog = lastLogAt ? now - lastLogAt : Infinity;
@@ -111,7 +146,6 @@ export default function FundStreakTracker() {
   const projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * Number(data.dailyTarget || 0);
 
   const targetDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 1) : null;
-  // completion value: for each day 1..N use the actual logged amount if present, else assume daily target
   let completionValue = 0;
   if (data.startDate) {
     for (let i = 0; i < data.streakGoalDays; i++) {
@@ -123,19 +157,15 @@ export default function FundStreakTracker() {
     completionValue = data.streakGoalDays * Number(data.dailyTarget || 0);
   }
 
-  // settings unlock: one day before target date (00:00 that day) — or freely editable pre-start
   const unlockDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 2) : null;
   const canEditConfig = !data.startDate || todayStr() >= unlockDate;
 
-  // the very first log is open right now (so today isn't wasted waiting); every day after
-  // this, the normal 10pm gate applies as usual.
   const canLogNow = data.logs.length === 0 || now.getHours() >= LOG_HOUR;
 
   let mode = "green";
   if (isBroken) mode = "broken";
   else if (celebratingLoss) mode = "loss";
 
-  /* ---- continuous petal rain in green/neutral states ---- */
   useEffect(() => {
     if (mode !== "green" || reducedMotion.current) return;
     const host = petalHostRef.current;
@@ -163,7 +193,6 @@ export default function FundStreakTracker() {
     };
   }, [mode]);
 
-  /* ---- ambient diwali bursts, runs the WHOLE day profit is logged, any time page is open ---- */
   const showFestive = celebratingProfit || previewFestive;
 
   useEffect(() => {
@@ -195,14 +224,13 @@ export default function FundStreakTracker() {
       }
     };
     burst();
-    const interval = setInterval(burst, 18000); // a fresh burst every ~18s, all day, all session
+    const interval = setInterval(burst, 18000);
     return () => {
       alive = false;
       clearInterval(interval);
     };
   }, [mode, showFestive]);
 
-  /* ---- ambient ash/ember fall during loss/broken punishment ---- */
   useEffect(() => {
     if (mode === "green" || reducedMotion.current) return;
     const host = petalHostRef.current;
@@ -229,7 +257,6 @@ export default function FundStreakTracker() {
     };
   }, [mode]);
 
-  /* ---- actions ---- */
   const handleLog = () => {
     if (!canLogNow || loggedToday) return;
     const amt = Number(logAmount);
@@ -355,7 +382,6 @@ function SetupView({ data, onStart }) {
     </div>
   );
 }
-
 
 /* ================= GREEN THEME (default dashboard) ================= */
 function GreenView({
@@ -592,7 +618,6 @@ function Field({ label, value, setValue, type = "number" }) {
   );
 }
 
-/* ================= LOSS PUNISHMENT (rolling 24h from a negative log) ================= */
 function LossPunishView({ data, lastLog, hoursLeft, projectedFund, remainingDays, petalHostRef }) {
   const amt = Number(lastLog.amount);
   return (
@@ -617,7 +642,6 @@ function LossPunishView({ data, lastLog, hoursLeft, projectedFund, remainingDays
   );
 }
 
-/* ================= RED REGRET VIEW (missed a day entirely) ================= */
 function RedRegretView({ data, remainingDays, projectedFund, gapSinceLast, logAmount, setLogAmount, canLogNow, onLog, petalHostRef }) {
   const potentialProfit = data.streakGoalDays * Number(data.dailyTarget || 0);
   return (
@@ -663,7 +687,6 @@ function RedRegretView({ data, remainingDays, projectedFund, gapSinceLast, logAm
   );
 }
 
-/* ================= shared styles ================= */
 function pageWrap(mode) {
   return {
     position: "relative",
@@ -743,3 +766,8 @@ const GLOBAL_CSS = `
 }
 `;
 
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<FundStreakTracker />);
+</script>
+</body>
+</html>
