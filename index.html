@@ -10,11 +10,24 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div style="color:#7FE0AA;font-family:sans-serif;padding:40px 20px;text-align:center;">
+    Loading… if this never changes, JavaScript didn't run — see note below.
+  </div>
+</div>
+<div id="err-box" style="display:none;color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:12px;white-space:pre-wrap;"></div>
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+  window.addEventListener("error", function (e) {
+    var box = document.getElementById("err-box");
+    box.style.display = "block";
+    box.textContent += "Error: " + e.message + " (" + (e.filename || "?") + ":" + (e.lineno || "?") + ")\n";
+  });
+</script>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load React from unpkg.com — this network/browser may be blocking that CDN.\n';"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load ReactDOM from unpkg.com.\n';"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load Babel from unpkg.com.\n';"></script>
 
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef, useCallback } = React;
@@ -766,8 +779,15 @@ const GLOBAL_CSS = `
 }
 `;
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<FundStreakTracker />);
+try {
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<FundStreakTracker />);
+} catch (e) {
+  document.getElementById("root").innerHTML =
+    '<div style="color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:20px;white-space:pre-wrap;">Render failed: ' +
+    (e && e.message ? e.message : e) +
+    '</div>';
+}
 </script>
 </body>
 </html>
