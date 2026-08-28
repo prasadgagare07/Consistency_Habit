@@ -25,769 +25,1036 @@
   });
 </script>
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load React from unpkg.com — this network/browser may be blocking that CDN.\n';"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load ReactDOM from unpkg.com.\n';"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load Babel from unpkg.com.\n';"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load React from cdnjs.cloudflare.com — this network/browser may be blocking that CDN.\n';"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load ReactDOM from cdnjs.cloudflare.com.\n';"></script>
 
-<script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef, useCallback } = React;
+<script>
+(function () {
+  var h = React.createElement;
+  var useState = React.useState, useEffect = React.useEffect, useRef = React.useRef, useCallback = React.useCallback;
 
-/* ---------- tiny emoji-based icon components (replaces lucide-react) ---------- */
-const Icon = (glyph) => ({ size = 16 }) => React.createElement("span", { style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, glyph);
-const Flame = Icon("🔥");
-const Wallet = Icon("👛");
-const CalendarDays = Icon("📅");
-const IndianRupee = Icon("₹");
-const Lock = Icon("🔒");
-const Unlock = Icon("🔓");
-const Target = Icon("🎯");
+  /* ---------- tiny emoji-based icon components ---------- */
+  function makeIcon(glyph) {
+    return function (props) {
+      var size = (props && props.size) || 16;
+      return h("span", { style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, glyph);
+    };
+  }
+  var Flame = makeIcon("🔥");
+  var Wallet = makeIcon("👛");
+  var CalendarDays = makeIcon("📅");
+  var IndianRupee = makeIcon("₹");
+  var Lock = makeIcon("🔒");
+  var Unlock = makeIcon("🔓");
+  var Target = makeIcon("🎯");
 
-/* ---------- storage shim (replaces Claude's window.storage with localStorage) ---------- */
-const storage = {
-  get: async (key) => {
-    const v = localStorage.getItem(key);
-    return v !== null ? { key, value: v } : null;
-  },
-  set: async (key, value) => {
-    localStorage.setItem(key, value);
-    return { key, value };
-  },
-};
+  /* ---------- storage shim (localStorage instead of Claude's window.storage) ---------- */
+  var storage = {
+    get: function (key) {
+      var v = localStorage.getItem(key);
+      return Promise.resolve(v !== null ? { key: key, value: v } : null);
+    },
+    set: function (key, value) {
+      localStorage.setItem(key, value);
+      return Promise.resolve({ key: key, value: value });
+    },
+  };
 
-/* ---------- helpers ---------- */
-const pad = (n) => String(n).padStart(2, "0");
-const todayStr = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
-const addDays = (dateStr, n) => {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
-const daysBetween = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
-const fmtDate = (s) =>
-  s ? new Date(s + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";
-const inr = (n) => (n < 0 ? "-₹" : "₹") + Math.round(Math.abs(n)).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  /* ---------- helpers ---------- */
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+  function addDays(dateStr, n) {
+    var d = new Date(dateStr + "T00:00:00");
+    d.setDate(d.getDate() + n);
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+  function daysBetween(a, b) {
+    return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+  }
+  function fmtDate(s) {
+    return s ? new Date(s + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+  }
+  function inr(n) {
+    return (n < 0 ? "-₹" : "₹") + Math.round(Math.abs(n)).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
 
-const STORAGE_KEY = "fund-streak:data";
-const LOG_HOUR = 22; // 10 PM
+  var STORAGE_KEY = "fund-streak:data";
+  var LOG_HOUR = 22; // 10 PM
 
-const DEFAULT_STATE = {
-  currentFund: 10000,
-  dailyTarget: 5000,
-  streakGoalDays: 10,
-  startDate: null,
-  logs: [],
-};
+  var DEFAULT_STATE = {
+    currentFund: 10000,
+    dailyTarget: 5000,
+    streakGoalDays: 10,
+    startDate: null,
+    logs: [],
+    withdrawalAccount: null, // { method: 'upi'|'bank'|'usdt'|'tron', details: string }
+    deposits: [
+      { date: "2026-07-24", time: "—", amount: 30000, status: "SUCCESS" },
+      { date: "2026-08-06", time: "—", amount: 30000, status: "SUCCESS" },
+      { date: "2026-08-20", time: "—", amount: 12000, status: "SUCCESS" },
+    ],
+    withdrawals: [
+      { date: "2026-07-25", time: "—", amount: 4278, status: "SUCCESS" },
+      { date: "2026-07-28", time: "—", amount: 1216, status: "SUCCESS" },
+      { date: "2026-08-02", time: "—", amount: 7520, status: "SUCCESS" },
+      { date: "2026-08-07", time: "—", amount: 16273, status: "SUCCESS" },
+      { date: "2026-08-12", time: "—", amount: 2100, status: "SUCCESS" },
+      { date: "2026-08-16", time: "—", amount: 1000, status: "SUCCESS" },
+      { date: "2026-08-24", time: "—", amount: 17000, status: "SUCCESS" },
+      { date: "2026-08-28", time: "—", amount: 8927, status: "SUCCESS" },
+    ],
+  };
 
-/* ================= main component ================= */
-function FundStreakTracker() {
-  const [data, setData] = useState(DEFAULT_STATE);
-  const [loaded, setLoaded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [logAmount, setLogAmount] = useState("");
-  const [now, setNow] = useState(new Date());
-  const [previewFestive, setPreviewFestive] = useState(false);
-  const petalHostRef = useRef(null);
-  const crackerHostRef = useRef(null);
-  const reducedMotion = useRef(
-    typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+  var DEPOSIT_PASSCODE = "Krishna";
+  var WITHDRAW_PASSCODE = "Radha";
+  var VAULT_THRESHOLD = 5000; // profit above this per day goes to the surplus vault
+  var WITHDRAWAL_METHODS = [
+    { id: "upi", label: "UPI", icon: "📱" },
+    { id: "bank", label: "Bank Account", icon: "🏦" },
+    { id: "usdt", label: "USDT (TRC20)", icon: "₮" },
+    { id: "tron", label: "TRON", icon: "🔺" },
+  ];
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await storage.get(STORAGE_KEY);
-        if (res && res.value) setData(JSON.parse(res.value));
-      } catch (e) {
-        /* first run */
-      } finally {
+  /* ---------- shared styles ---------- */
+  function pageWrap(mode) {
+    return {
+      position: "relative",
+      minHeight: "100vh",
+      overflow: "hidden",
+      background:
+        mode === "green"
+          ? "radial-gradient(circle at 50% -10%, #175C42 0%, #0B3D2E 45%, #062017 100%)"
+          : "radial-gradient(circle at 50% 0%, #6B0000 0%, #3D0000 55%, #1A0000 100%)",
+      color: mode === "green" ? "#EAF7EF" : "#FFE3E3",
+      padding: "32px 16px 60px",
+      animation: mode === "red" ? "red-pulse 2.6s ease-in-out infinite" : "none",
+      fontFamily: "'Inter', sans-serif",
+    };
+  }
+  var heroBox = {
+    background: "linear-gradient(160deg, rgba(57,255,136,0.10), rgba(57,255,136,0.02))",
+    border: "1px solid rgba(127,224,170,0.25)",
+    borderRadius: 20,
+    padding: "22px 20px",
+    textAlign: "center",
+    marginBottom: 16,
+  };
+  var inputStyle = {
+    flex: 1,
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(127,224,170,0.3)",
+    background: "rgba(6,32,23,0.5)",
+    color: "#EAF7EF",
+    fontSize: 14,
+    outline: "none",
+  };
+  var primaryBtn = {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "10px 16px",
+    borderRadius: 10,
+    border: "none",
+    background: "linear-gradient(135deg,#39FF88,#0FA968)",
+    color: "#062017",
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: "pointer",
+  };
+  var fairyRow = { position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-around", padding: "14px 10px", zIndex: 5 };
+
+  var GLOBAL_CSS_TEXT =
+    "@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&family=Inter:wght@400;500;600&display=swap');\n" +
+    "@keyframes petal-fall { 0% { transform: translateY(0) rotate(0deg); } 100% { transform: translateY(100vh) rotate(180deg); } }\n" +
+    "@keyframes cracker-burst { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; } }\n" +
+    "@keyframes twinkle { from { opacity: 0.35; transform: scale(0.85); } to { opacity: 1; transform: scale(1.15); } }\n" +
+    "@keyframes diya-flicker { 0%,100% { filter: drop-shadow(0 0 6px #FFB627); transform: scale(1); } 50% { filter: drop-shadow(0 0 14px #FF6B35); transform: scale(1.08); } }\n" +
+    "@keyframes red-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.15); } }\n" +
+    "@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }\n";
+
+  // inject global CSS once, up front (plain <style>, no React needed for this)
+  var styleTag = document.createElement("style");
+  styleTag.textContent = GLOBAL_CSS_TEXT;
+  document.head.appendChild(styleTag);
+
+  /* ================= SETUP (first run) ================= */
+  function SetupView(props) {
+    var data = props.data, onStart = props.onStart;
+    var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];
+    var s2 = useState(data.dailyTarget), dailyTarget = s2[0], setDailyTarget = s2[1];
+    var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];
+    var s4 = useState(todayStr()), startDate = s4[0], setStartDate = s4[1];
+
+    return h(
+      "div",
+      { style: pageWrap("green") },
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 420, margin: "60px auto", textAlign: "center" } },
+        h("div", { style: { fontSize: 44, marginBottom: 6 } }, "🪔"),
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#EFFFF4", margin: "0 0 4px" } }, "Start your consistency streak"),
+        h("p", { style: { fontSize: 13, color: "#9FE8BC", marginBottom: 20 } }, "Set your numbers once — they lock until the day before your target date."),
+        h(
+          "div",
+          { style: { display: "flex", flexDirection: "column", gap: 10, textAlign: "left" } },
+          h(Field, { label: "Current fund (₹)", value: currentFund, setValue: setCurrentFund }),
+          h(Field, { label: "Daily target (₹)", value: dailyTarget, setValue: setDailyTarget }),
+          h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),
+          h(Field, { label: "Start date", value: startDate, setValue: setStartDate, type: "date" })
+        ),
+        h(
+          "button",
+          {
+            onClick: function () {
+              onStart({
+                currentFund: Number(currentFund),
+                dailyTarget: Number(dailyTarget),
+                streakGoalDays: Number(streakGoalDays),
+                startDate: startDate,
+              });
+            },
+            style: Object.assign({}, primaryBtn, { justifyContent: "center", width: "100%", marginTop: 16 }),
+          },
+          h(Flame, { size: 16 }),
+          " Light the streak"
+        )
+      )
+    );
+  }
+
+  /* ================= GREEN THEME (default dashboard) ================= */
+  function GreenView(props) {
+    var data = props.data, currentStreak = props.currentStreak, remainingDays = props.remainingDays,
+      loggedFund = props.loggedFund, projectedFund = props.projectedFund, completionValue = props.completionValue,
+      targetDate = props.targetDate, loggedToday = props.loggedToday, showFestive = props.showFestive,
+      hoursLeft = props.hoursLeft, previewFestive = props.previewFestive, setPreviewFestive = props.setPreviewFestive,
+      canLogNow = props.canLogNow, logAmount = props.logAmount, setLogAmount = props.setLogAmount, onLog = props.onLog,
+      editing = props.editing, setEditing = props.setEditing, canEditConfig = props.canEditConfig, unlockDate = props.unlockDate,
+      saveConfig = props.saveConfig, petalHostRef = props.petalHostRef, crackerHostRef = props.crackerHostRef;
+
+    var ring = Math.min(currentStreak / Math.max(data.streakGoalDays, 1), 1);
+    var circumference = 2 * Math.PI * 54;
+    var todaysAmt = Number(((data.logs.find(function (l) { return l.date === todayStr(); })) || {}).amount || 0);
+
+    return h(
+      "div",
+      { style: pageWrap("green") },
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
+      showFestive ? h("div", { ref: crackerHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 5 } }) : null,
+      showFestive ? h(FestiveAmbience) : null,
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 480, margin: "0 auto", zIndex: 6 } },
+        h(
+          "div",
+          { style: { textAlign: "center", marginBottom: 22 } },
+          h("div", { style: { fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: "#7FE0AA" } }, "Consistency Fund"),
+          h(
+            "h1",
+            { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 400, color: "#B9F3CE", margin: "4px 0 0" } },
+            showFestive ? "the flame is still burning bright" : "stay lit, day after day"
+          )
+        ),
+        h(
+          "div",
+          { style: { display: "flex", justifyContent: "center", marginBottom: 18 } },
+          h(
+            "div",
+            { style: { position: "relative", width: 152, height: 152 } },
+            h(
+              "svg",
+              { width: 152, height: 152, style: { transform: "rotate(-90deg)" } },
+              h("circle", { cx: 76, cy: 76, r: 54, stroke: "#0F3A2A", strokeWidth: 10, fill: "none" }),
+              h("circle", {
+                cx: 76, cy: 76, r: 54, stroke: "url(#flameGrad)", strokeWidth: 10, fill: "none", strokeLinecap: "round",
+                strokeDasharray: circumference, strokeDashoffset: circumference * (1 - ring),
+                style: { transition: "stroke-dashoffset 700ms ease" },
+              }),
+              h(
+                "defs",
+                null,
+                h(
+                  "linearGradient",
+                  { id: "flameGrad", x1: "0%", y1: "0%", x2: "100%", y2: "100%" },
+                  h("stop", { offset: "0%", stopColor: "#FFD23F" }),
+                  h("stop", { offset: "100%", stopColor: "#39FF88" })
+                )
+              )
+            ),
+            h(
+              "div",
+              { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" } },
+              h("span", { style: { fontSize: 26 } }, "🪔"),
+              h("span", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700 } }, currentStreak),
+              h("span", { style: { fontSize: 11, color: "#7FE0AA" } }, "day streak")
+            )
+          )
+        ),
+        h(
+          "div",
+          { style: heroBox },
+          h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, "Projected fund"),
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: "#EFFFF4" } }, inr(projectedFund)),
+          h("div", { style: { fontSize: 12, color: "#9FE8BC", marginTop: 4 } }, "current + logged + (remaining × daily target)")
+        ),
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current fund", value: inr(data.currentFund) }),
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Logged fund", value: inr(loggedFund) }),
+          h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Start date", value: fmtDate(data.startDate) }),
+          h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Target date", value: fmtDate(targetDate) })
+        ),
+        h(
+          "div",
+          { style: { marginBottom: 16 } },
+          h(
+            "div",
+            { style: { background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 16, padding: "14px 16px" } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#FFD23F", fontSize: 11 } }, h(Target, { size: 14 }), " If you complete this streak"),
+            h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, fontWeight: 700, color: "#FFF3CF", marginTop: 2 } }, inr(completionValue)),
+            h("div", { style: { fontSize: 11, color: "#F0D28B", marginTop: 2 } }, "logged days count as-is, remaining days assumed at daily target")
+          )
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 12 } },
+          loggedToday
+            ? h(
+                "div",
+                { style: { textAlign: "center", color: "#B9F3CE", fontSize: 14 } },
+                "✓ Today is logged (" + inr(todaysAmt) + "). ",
+                showFestive ? "The celebration keeps going for " + hoursLeft + "h more." : "Come back tomorrow after 10 PM."
+              )
+            : canLogNow
+            ? h(
+                React.Fragment,
+                null,
+                h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 8 } }, "Log today's profit / loss"),
+                h(
+                  "div",
+                  { style: { display: "flex", gap: 8 } },
+                  h("input", {
+                    type: "number",
+                    value: logAmount,
+                    onChange: function (e) { setLogAmount(e.target.value); },
+                    placeholder: "e.g. " + data.dailyTarget + " or -1200 for a loss",
+                    style: inputStyle,
+                  }),
+                  h("button", { onClick: onLog, style: primaryBtn }, h(Flame, { size: 16 }), " Log")
+                )
+              )
+            : h(
+                "div",
+                { style: { textAlign: "center", color: "#7FE0AA", fontSize: 13, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },
+                h(Lock, { size: 16 }),
+                "Logging opens at 10:00 PM today"
+              )
+        ),
+        h(
+          "div",
+          { style: { display: "flex", justifyContent: "center", gap: 16, flexWrap: "wrap" } },
+          h(
+            "button",
+            {
+              onClick: function () { setEditing(function (e) { return !e; }); },
+              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
+            },
+            canEditConfig ? h(Unlock, { size: 12 }) : h(Lock, { size: 12 }),
+            editing ? "close settings" : canEditConfig ? "edit fund / target / goal" : "locked until " + fmtDate(unlockDate)
+          ),
+          !showFestive
+            ? h(
+                "button",
+                {
+                  onClick: function () {
+                    setPreviewFestive(true);
+                    setTimeout(function () { setPreviewFestive(false); }, 15000);
+                  },
+                  disabled: previewFestive,
+                  style: {
+                    display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none",
+                    color: previewFestive ? "#FFD23F" : "#7FE0AA", fontSize: 12, cursor: previewFestive ? "default" : "pointer",
+                  },
+                },
+                "🎬 " + (previewFestive ? "previewing… (15s)" : "preview celebration")
+              )
+            : null,
+          h(
+            "button",
+            {
+              onClick: props.onOpenFunds,
+              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
+            },
+            "💰 withdrawals & deposits"
+          )
+        ),
+        editing && canEditConfig ? h(ConfigForm, { data: data, onSave: saveConfig }) : null,
+        editing && !canEditConfig
+          ? h(
+              "div",
+              { style: { marginTop: 10, textAlign: "center", fontSize: 12, color: "#FFB3B3" } },
+              "Settings unlock one day before your target date (" + fmtDate(unlockDate) + ")."
+            )
+          : null
+      )
+    );
+  }
+
+  function FestiveAmbience() {
+    var colors = ["#FFD23F", "#FF6B35", "#FF3E7F", "#8CFFDA"];
+    var dots = [];
+    for (var i = 0; i < 24; i++) {
+      dots.push(
+        h("span", {
+          key: i,
+          style: {
+            width: 8, height: 8, borderRadius: "50%",
+            background: colors[i % 4],
+            boxShadow: "0 0 8px " + colors[i % 4],
+            animation: "twinkle " + (0.8 + (i % 5) * 0.15) + "s ease-in-out infinite alternate",
+            animationDelay: (i * 0.05) + "s",
+          },
+        })
+      );
+    }
+    return h(
+      React.Fragment,
+      null,
+      h("div", { style: fairyRow }, dots),
+      h("div", { style: { position: "absolute", bottom: 10, left: 10, fontSize: 34, animation: "diya-flicker 1s infinite", zIndex: 5 } }, "🪔"),
+      h("div", { style: { position: "absolute", bottom: 10, right: 10, fontSize: 34, animation: "diya-flicker 1.1s infinite", zIndex: 5 } }, "🪔"),
+      h("div", { style: { position: "absolute", top: 40, left: 10, fontSize: 28, animation: "diya-flicker 0.9s infinite", zIndex: 5 } }, "🪔"),
+      h("div", { style: { position: "absolute", top: 40, right: 10, fontSize: 28, animation: "diya-flicker 1.05s infinite", zIndex: 5 } }, "🪔")
+    );
+  }
+
+  function Stat(props) {
+    return h(
+      "div",
+      { style: { background: "rgba(6,32,23,0.55)", border: "1px solid rgba(127,224,170,0.18)", borderRadius: 14, padding: "12px 14px" } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#7FE0AA", fontSize: 11 } }, props.icon, " ", props.label),
+      h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 16, fontWeight: 700, marginTop: 4 } }, props.value)
+    );
+  }
+
+  function ConfigForm(props) {
+    var data = props.data, onSave = props.onSave;
+    var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];
+    var s2 = useState(data.dailyTarget), dailyTarget = s2[0], setDailyTarget = s2[1];
+    var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];
+    return h(
+      "div",
+      { style: { marginTop: 12, background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", gap: 8 } },
+      h(Field, { label: "Current fund (₹)", value: currentFund, setValue: setCurrentFund }),
+      h(Field, { label: "Daily target (₹)", value: dailyTarget, setValue: setDailyTarget }),
+      h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),
+      h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "Start date stays fixed at " + fmtDate(data.startDate) + "."),
+      h(
+        "button",
+        {
+          onClick: function () {
+            onSave({ currentFund: Number(currentFund), dailyTarget: Number(dailyTarget), streakGoalDays: Number(streakGoalDays) });
+          },
+          style: Object.assign({}, primaryBtn, { justifyContent: "center", marginTop: 4 }),
+        },
+        "Save"
+      )
+    );
+  }
+
+  function Field(props) {
+    var type = props.type || "number";
+    return h(
+      "label",
+      { style: { fontSize: 11, color: "#7FE0AA", display: "flex", flexDirection: "column", gap: 4 } },
+      props.label,
+      h("input", { type: type, value: props.value, onChange: function (e) { props.setValue(e.target.value); }, style: inputStyle })
+    );
+  }
+
+  function FundsView(props) {
+    var data = props.data, currentFundsOps = props.currentFundsOps, vaultBalance = props.vaultBalance,
+      vaultReviewCount = props.vaultReviewCount, onBack = props.onBack, addDeposit = props.addDeposit,
+      addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount;
+
+    var s1 = useState(null), openForm = s1[0], setOpenForm = s1[1]; // 'deposit' | 'withdraw' | 'account' | null
+    var s2 = useState(""), amount = s2[0], setAmount = s2[1];
+    var s3 = useState(""), passcode = s3[0], setPasscode = s3[1];
+    var s4 = useState(""), formError = s4[0], setFormError = s4[1];
+    var s5 = useState(data.withdrawalAccount ? data.withdrawalAccount.method : ""), method = s5[0], setMethod = s5[1];
+    var s6 = useState(data.withdrawalAccount ? data.withdrawalAccount.details : ""), details = s6[0], setDetails = s6[1];
+
+    function resetForm() {
+      setOpenForm(null); setAmount(""); setPasscode(""); setFormError("");
+    }
+
+    function submitDeposit() {
+      var err = addDeposit(amount, passcode);
+      if (err) { setFormError(err); return; }
+      resetForm();
+    }
+    function submitWithdraw() {
+      var err = addWithdrawal(amount, passcode);
+      if (err) { setFormError(err); return; }
+      resetForm();
+    }
+    function submitAccount() {
+      var err = saveWithdrawalAccount(method, details, passcode);
+      if (err) { setFormError(err); return; }
+      resetForm();
+    }
+
+    var methodLabel = "";
+    if (data.withdrawalAccount) {
+      var m = WITHDRAWAL_METHODS.find(function (x) { return x.id === data.withdrawalAccount.method; });
+      methodLabel = (m ? m.icon + " " + m.label : data.withdrawalAccount.method) + (data.withdrawalAccount.details ? " — " + data.withdrawalAccount.details : "");
+    }
+
+    function historyRow(item, key) {
+      return h(
+        "div",
+        { key: key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid rgba(127,224,170,0.12)" } },
+        h(
+          "div",
+          null,
+          h("div", { style: { fontSize: 13, color: "#EAF7EF" } }, fmtDate(item.date) + " · " + item.time),
+          h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "✅ " + (item.status || "SUCCESS"))
+        ),
+        h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 18, fontWeight: 700, color: "#EFFFF4" } }, inr(item.amount))
+      );
+    }
+
+    return h(
+      "div",
+      { style: pageWrap("green") },
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 480, margin: "0 auto" } },
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 } },
+          h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "💰 Withdrawals & Deposits")
+        ),
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds", value: inr(currentFundsOps) }),
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit logged", value: inr(props.spendableProfit + vaultBalance) })
+        ),
+        h(
+          "div",
+          { style: { background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 16, padding: "14px 16px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          h(
+            "div",
+            null,
+            h("div", { style: { color: "#FFD23F", fontSize: 11 } }, "🏦 SURPLUS VAULT"),
+            h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700, color: "#FFF3CF" } }, inr(vaultBalance)),
+            h("div", { style: { fontSize: 11, color: "#F0D28B", marginTop: 2 } }, "Profit above " + inr(VAULT_THRESHOLD) + "/day is stored here")
+          ),
+          h("div", { style: { color: "#FFD23F", fontSize: 12 } }, vaultReviewCount + " / 15 withdrawals")
+        ),
+        h(
+          "div",
+          { style: { display: "flex", gap: 10, marginBottom: 16 } },
+          h(
+            "button",
+            { onClick: function () { setOpenForm(openForm === "deposit" ? null : "deposit"); setFormError(""); }, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) },
+            "➕ Deposit"
+          ),
+          h(
+            "button",
+            { onClick: function () { setOpenForm(openForm === "withdraw" ? null : "withdraw"); setFormError(""); }, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center", background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) },
+            "💸 Withdraw"
+          )
+        ),
+        openForm === "deposit"
+          ? h(
+              "div",
+              { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },
+              h("input", { type: "number", placeholder: "Deposit amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),
+              h("input", { type: "password", placeholder: "Deposit passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
+              formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
+              h(
+                "div",
+                { style: { display: "flex", gap: 8 } },
+                h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),
+                h("button", { onClick: submitDeposit, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) }, "Confirm")
+              )
+            )
+          : null,
+        openForm === "withdraw"
+          ? h(
+              "div",
+              { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },
+              h("input", { type: "number", placeholder: "Withdraw amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),
+              h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
+              formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
+              h(
+                "div",
+                { style: { display: "flex", gap: 8 } },
+                h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),
+                h("button", { onClick: submitWithdraw, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center", background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) }, "Confirm")
+              )
+            )
+          : null,
+        h(
+          "div",
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },
+          h(
+            "div",
+            { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+            h("div", { style: { color: "#7FE0AA", fontSize: 12 } }, "🏦 WITHDRAWAL ACCOUNT"),
+            h(
+              "button",
+              { onClick: function () { setOpenForm(openForm === "account" ? null : "account"); setFormError(""); }, style: { background: "transparent", border: "none", color: "#FFD23F", fontSize: 12, cursor: "pointer" } },
+              "✏️ Edit"
+            )
+          ),
+          h("div", { style: { color: "#EAF7EF", fontSize: 13 } }, methodLabel || "Not set — tap Edit to add one"),
+          openForm === "account"
+            ? h(
+                "div",
+                { style: { marginTop: 12, display: "flex", flexDirection: "column", gap: 8 } },
+                h(
+                  "div",
+                  { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
+                  WITHDRAWAL_METHODS.map(function (m) {
+                    return h(
+                      "button",
+                      {
+                        key: m.id,
+                        onClick: function () { setMethod(m.id); },
+                        style: {
+                          padding: "10px", borderRadius: 10, border: method === m.id ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",
+                          background: method === m.id ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", cursor: "pointer",
+                        },
+                      },
+                      m.icon + " " + m.label
+                    );
+                  })
+                ),
+                h("input", { placeholder: "Account / UPI ID / wallet address", value: details, onChange: function (e) { setDetails(e.target.value); }, style: inputStyle }),
+                h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
+                formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
+                h(
+                  "div",
+                  { style: { display: "flex", gap: 8 } },
+                  h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),
+                  h("button", { onClick: submitAccount, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) }, "Save Account")
+                )
+              )
+            : null
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📖 WITHDRAWAL HISTORY"),
+          data.withdrawals.length
+            ? data.withdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "w" + i); })
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No withdrawals yet.")
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16 } },
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📥 DEPOSIT HISTORY"),
+          data.deposits.length
+            ? data.deposits.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (d, i) { return historyRow(d, "d" + i); })
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No deposits yet.")
+        )
+      )
+    );
+  }
+
+  function LossPunishView(props) {
+    var data = props.data, lastLog = props.lastLog, hoursLeft = props.hoursLeft,
+      projectedFund = props.projectedFund, remainingDays = props.remainingDays, petalHostRef = props.petalHostRef;
+    var amt = Number(lastLog.amount);
+    return h(
+      "div",
+      { style: pageWrap("red") },
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 440, margin: "80px auto", textAlign: "center" } },
+        h("div", { style: { fontSize: 44, marginBottom: 6 } }, "🕯️💨"),
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#FFF", margin: "0 0 8px" } }, "That day cost you " + inr(Math.abs(amt))),
+        h(
+          "p",
+          { style: { fontSize: 13, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" } },
+          "The streak still counts — you showed up and logged it — but the diya burns red for a full 24 hours as a reminder that day went backwards, not forwards. " +
+            (hoursLeft > 0 ? hoursLeft + "h left." : "")
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16 } },
+          h("div", { style: { fontSize: 12, color: "#FFB3B3" } }, "Projected fund still stands at"),
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 30, fontWeight: 700, color: "#fff" } }, inr(projectedFund)),
+          h("div", { style: { fontSize: 12, color: "#FFB3B3", marginTop: 6 } }, remainingDays + " days still needed")
+        )
+      )
+    );
+  }
+
+  function RedRegretView(props) {
+    var data = props.data, remainingDays = props.remainingDays, projectedFund = props.projectedFund,
+      gapSinceLast = props.gapSinceLast, logAmount = props.logAmount, setLogAmount = props.setLogAmount,
+      canLogNow = props.canLogNow, onLog = props.onLog, petalHostRef = props.petalHostRef;
+    var potentialProfit = data.streakGoalDays * Number(data.dailyTarget || 0);
+    return h(
+      "div",
+      { style: pageWrap("red") },
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 440, margin: "60px auto", textAlign: "center" } },
+        h("div", { style: { fontSize: 46, marginBottom: 6 } }, "🕯️💨"),
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, margin: "0 0 8px", color: "#FFF" } }, "The streak went out."),
+        h(
+          "p",
+          { style: { fontSize: 14, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" } },
+          (gapSinceLast > 1 ? (gapSinceLast - 1) + " day(s) went unlogged. " : "") +
+            "On " + inr(data.currentFund) + ", " + data.streakGoalDays + " consistent days at " + inr(data.dailyTarget) + "/day were worth ",
+          h("b", null, inr(potentialProfit)),
+          ". A missed day resets the streak count — remaining days needed is now ",
+          h("b", null, remainingDays),
+          ", not less."
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16, marginBottom: 16 } },
+          h("div", { style: { fontSize: 12, color: "#FFB3B3" } }, "Projected fund right now"),
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 34, fontWeight: 700, color: "#fff" } }, inr(projectedFund)),
+          h("div", { style: { fontSize: 12, color: "#FFB3B3", marginTop: 6 } }, "Streak reset to 0 · " + remainingDays + " days still needed")
+        ),
+        canLogNow
+          ? h(
+              "div",
+              { style: { display: "flex", gap: 8, marginBottom: 6 } },
+              h("input", {
+                type: "number",
+                value: logAmount,
+                onChange: function (e) { setLogAmount(e.target.value); },
+                placeholder: "log today's profit/loss",
+                style: Object.assign({}, inputStyle, { background: "rgba(0,0,0,0.4)", borderColor: "#FF7A7A", color: "#fff" }),
+              }),
+              h(
+                "button",
+                { onClick: onLog, style: Object.assign({}, primaryBtn, { background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) },
+                "🪔 Relight"
+              )
+            )
+          : h(
+              "div",
+              { style: { fontSize: 13, color: "#FFB3B3", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+              h(Lock, { size: 14 }),
+              " Relighting opens at 10:00 PM"
+            ),
+        h("div", { style: { fontSize: 11, color: "#FF9B9B", marginTop: 6 } }, "Don't let ₹ sit idle again — log the day it happens.")
+      )
+    );
+  }
+
+  /* ================= main component ================= */
+  function FundStreakTracker() {
+    var s0 = useState(DEFAULT_STATE), data = s0[0], setData = s0[1];
+    var sl = useState(false), loaded = sl[0], setLoaded = sl[1];
+    var se = useState(false), editing = se[0], setEditing = se[1];
+    var sa = useState(""), logAmount = sa[0], setLogAmount = sa[1];
+    var sn = useState(new Date()), now = sn[0], setNow = sn[1];
+    var sp = useState(false), previewFestive = sp[0], setPreviewFestive = sp[1];
+    var sf = useState(false), showFunds = sf[0], setShowFunds = sf[1];
+    var petalHostRef = useRef(null);
+    var crackerHostRef = useRef(null);
+    var reducedMotion = useRef(
+      typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+
+    useEffect(function () {
+      var cancelled = false;
+      storage.get(STORAGE_KEY).then(function (res) {
+        if (cancelled) return;
+        if (res && res.value) {
+          try { setData(Object.assign({}, DEFAULT_STATE, JSON.parse(res.value))); } catch (e) {}
+        }
         setLoaded(true);
-      }
-    })();
-  }, []);
+      }).catch(function () { if (!cancelled) setLoaded(true); });
+      return function () { cancelled = true; };
+    }, []);
 
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 15000);
-    return () => clearInterval(t);
-  }, []);
+    useEffect(function () {
+      var t = setInterval(function () { setNow(new Date()); }, 15000);
+      return function () { clearInterval(t); };
+    }, []);
 
-  const persist = useCallback(async (next) => {
-    setData(next);
-    try {
-      await storage.set(STORAGE_KEY, JSON.stringify(next));
-    } catch (e) {
-      console.error("save failed", e);
-    }
-  }, []);
+    var persist = useCallback(function (next) {
+      setData(next);
+      storage.set(STORAGE_KEY, JSON.stringify(next)).catch(function (e) { console.error("save failed", e); });
+    }, []);
 
-  const sortedLogs = [...data.logs].sort((a, b) => (a.date < b.date ? -1 : 1));
-  const loggedFund = sortedLogs.reduce((s, l) => s + Number(l.amount || 0), 0);
+    var sortedLogs = data.logs.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    var loggedFund = sortedLogs.reduce(function (s, l) { return s + Number(l.amount || 0); }, 0);
 
-  let currentStreak = 0;
-  if (sortedLogs.length) {
-    const gapToToday = daysBetween(sortedLogs[sortedLogs.length - 1].date, todayStr());
-    if (gapToToday <= 1) {
-      currentStreak = 1;
-      for (let i = sortedLogs.length - 1; i > 0; i--) {
-        if (daysBetween(sortedLogs[i - 1].date, sortedLogs[i].date) === 1) currentStreak++;
-        else break;
+    var currentStreak = 0;
+    if (sortedLogs.length) {
+      var gapToToday = daysBetween(sortedLogs[sortedLogs.length - 1].date, todayStr());
+      if (gapToToday <= 1) {
+        currentStreak = 1;
+        for (var i = sortedLogs.length - 1; i > 0; i--) {
+          if (daysBetween(sortedLogs[i - 1].date, sortedLogs[i].date) === 1) currentStreak++;
+          else break;
+        }
       }
     }
+
+    var lastLogDate = sortedLogs.length ? sortedLogs[sortedLogs.length - 1].date : null;
+    var gapSinceLast = lastLogDate ? daysBetween(lastLogDate, todayStr()) : 0;
+    var missedAtLeastOneDay = data.startDate && lastLogDate !== null && gapSinceLast >= 2;
+    var missedFromStartWithNoLog = data.startDate && lastLogDate === null && daysBetween(data.startDate, todayStr()) >= 1;
+    var isBroken = missedAtLeastOneDay || missedFromStartWithNoLog;
+
+    var todayLog = data.logs.find(function (l) { return l.date === todayStr(); });
+    var loggedToday = !!todayLog;
+
+    var lastLog = sortedLogs.length ? sortedLogs[sortedLogs.length - 1] : null;
+    var lastLogAt = lastLog ? new Date(lastLog.loggedAt || (lastLog.date + "T12:00:00")) : null;
+    var msSinceLastLog = lastLogAt ? now - lastLogAt : Infinity;
+    var within24h = msSinceLastLog < 24 * 60 * 60 * 1000;
+    var celebratingProfit = within24h && lastLog && Number(lastLog.amount) >= 0;
+    var celebratingLoss = within24h && lastLog && Number(lastLog.amount) < 0;
+    var hoursLeft = within24h ? Math.max(0, Math.ceil((24 * 60 * 60 * 1000 - msSinceLastLog) / (60 * 60 * 1000))) : 0;
+
+    var remainingDays = Math.max(data.streakGoalDays - currentStreak, 0);
+    var projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * Number(data.dailyTarget || 0);
+
+    var targetDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 1) : null;
+    var completionValue = 0;
+    if (data.startDate) {
+      for (var d = 0; d < data.streakGoalDays; d++) {
+        var dDate = addDays(data.startDate, d);
+        var log = data.logs.find(function (l) { return l.date === dDate; });
+        completionValue += log ? Number(log.amount) : Number(data.dailyTarget || 0);
+      }
+    } else {
+      completionValue = data.streakGoalDays * Number(data.dailyTarget || 0);
+    }
+
+    var unlockDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 2) : null;
+    var canEditConfig = !data.startDate || todayStr() >= unlockDate;
+    var canLogNow = data.logs.length === 0 || now.getHours() >= LOG_HOUR;
+
+    var mode = "green";
+    if (isBroken) mode = "broken";
+    else if (celebratingLoss) mode = "loss";
+
+    var showFestive = celebratingProfit || previewFestive;
+
+    /* continuous petal rain in green/neutral states */
+    useEffect(function () {
+      if (mode !== "green" || reducedMotion.current) return;
+      var host = petalHostRef.current;
+      if (!host) return;
+      var petals = ["🌿", "🍃", "🌸"];
+      var alive = true;
+      function spawn() {
+        if (!alive) return;
+        var el = document.createElement("span");
+        el.textContent = petals[Math.floor(Math.random() * petals.length)];
+        el.style.position = "absolute";
+        el.style.left = Math.random() * 100 + "%";
+        el.style.top = "-40px";
+        el.style.fontSize = 14 + Math.random() * 16 + "px";
+        el.style.opacity = 0.55 + Math.random() * 0.35;
+        var dur = 7 + Math.random() * 6;
+        el.style.animation = "petal-fall " + dur + "s linear forwards";
+        host.appendChild(el);
+        setTimeout(function () { el.remove(); }, dur * 1000 + 100);
+      }
+      var interval = setInterval(spawn, 420);
+      return function () { alive = false; clearInterval(interval); };
+    }, [mode]);
+
+    /* ambient diwali bursts */
+    useEffect(function () {
+      if (mode !== "green" || !showFestive || reducedMotion.current) return;
+      var host = crackerHostRef.current;
+      if (!host) return;
+      var alive = true;
+      function burst() {
+        if (!alive) return;
+        var colors = ["#FFB627", "#FF6B35", "#FFD23F", "#FF3E7F", "#8CFFDA", "#FFF"];
+        var cx = 15 + Math.random() * 70;
+        var cy = 10 + Math.random() * 40;
+        for (var i = 0; i < 20; i++) {
+          var p = document.createElement("span");
+          var angle = (Math.PI * 2 * i) / 20;
+          var dist = 55 + Math.random() * 65;
+          p.style.position = "absolute";
+          p.style.left = cx + "%";
+          p.style.top = cy + "%";
+          p.style.width = p.style.height = 5 + Math.random() * 4 + "px";
+          p.style.borderRadius = "50%";
+          p.style.background = colors[Math.floor(Math.random() * colors.length)];
+          p.style.boxShadow = "0 0 8px " + colors[Math.floor(Math.random() * colors.length)];
+          p.style.setProperty("--dx", Math.cos(angle) * dist + "px");
+          p.style.setProperty("--dy", Math.sin(angle) * dist + "px");
+          p.style.animation = "cracker-burst 900ms ease-out forwards";
+          host.appendChild(p);
+          setTimeout(function () { p.remove(); }, 950);
+        }
+      }
+      burst();
+      var interval = setInterval(burst, 18000);
+      return function () { alive = false; clearInterval(interval); };
+    }, [mode, showFestive]);
+
+    /* ambient ash/ember during loss/broken punishment */
+    useEffect(function () {
+      if (mode === "green" || reducedMotion.current) return;
+      var host = petalHostRef.current;
+      if (!host) return;
+      var alive = true;
+      function spawn() {
+        if (!alive) return;
+        var el = document.createElement("span");
+        el.textContent = Math.random() > 0.5 ? "🔥" : "💀";
+        el.style.position = "absolute";
+        el.style.left = Math.random() * 100 + "%";
+        el.style.top = "-30px";
+        el.style.fontSize = 12 + Math.random() * 14 + "px";
+        el.style.opacity = 0.4 + Math.random() * 0.3;
+        var dur = 6 + Math.random() * 5;
+        el.style.animation = "petal-fall " + dur + "s linear forwards";
+        host.appendChild(el);
+        setTimeout(function () { el.remove(); }, dur * 1000 + 100);
+      }
+      var interval = setInterval(spawn, 500);
+      return function () { alive = false; clearInterval(interval); };
+    }, [mode]);
+
+    function handleLog() {
+      if (!canLogNow || loggedToday) return;
+      var amt = Number(logAmount);
+      if (!amt && amt !== 0) return;
+      var next = Object.assign({}, data, {
+        logs: data.logs.filter(function (l) { return l.date !== todayStr(); }).concat([
+          { date: todayStr(), amount: amt, loggedAt: new Date().toISOString() },
+        ]),
+      });
+      persist(next);
+      setLogAmount("");
+    }
+
+    function startChallenge(cfg) {
+      persist(Object.assign({}, data, cfg, { startDate: cfg.startDate || todayStr(), logs: [] }));
+      setEditing(false);
+    }
+
+    function saveConfig(cfg) {
+      persist(Object.assign({}, data, cfg));
+      setEditing(false);
+    }
+
+    /* ---------- money-ops: vault, deposits, withdrawals ---------- */
+    var vaultBalance = 0;
+    data.logs.forEach(function (l) {
+      var amt = Number(l.amount || 0);
+      if (amt > VAULT_THRESHOLD) vaultBalance += amt - VAULT_THRESHOLD;
+    });
+    var spendableProfit = loggedFund - vaultBalance; // profit minus whatever sat aside in the vault
+    var totalDeposited = data.deposits.reduce(function (s, d) { return s + Number(d.amount || 0); }, 0);
+    var totalWithdrawn = data.withdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
+    var currentFundsOps = totalDeposited + spendableProfit - totalWithdrawn;
+    var vaultReviewCount = data.withdrawals.length % 15;
+
+    function nowParts() {
+      var d = new Date();
+      var h = d.getHours(), m = d.getMinutes();
+      var ampm = h >= 12 ? "pm" : "am";
+      var h12 = h % 12; if (h12 === 0) h12 = 12;
+      return { date: todayStr(), time: h12 + ":" + pad(m) + " " + ampm };
+    }
+
+    function addDeposit(amount, passcode) {
+      if (passcode !== DEPOSIT_PASSCODE) return "Wrong passcode.";
+      var amt = Number(amount);
+      if (!amt || amt <= 0) return "Enter a valid amount.";
+      var np = nowParts();
+      persist(Object.assign({}, data, {
+        deposits: data.deposits.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS" }]),
+      }));
+      return null;
+    }
+
+    function addWithdrawal(amount, passcode) {
+      if (!data.withdrawalAccount) return "Set a withdrawal account first.";
+      if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";
+      var amt = Number(amount);
+      if (!amt || amt <= 0) return "Enter a valid amount.";
+      if (amt > currentFundsOps) return "That's more than your current funds.";
+      var np = nowParts();
+      persist(Object.assign({}, data, {
+        withdrawals: data.withdrawals.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS" }]),
+      }));
+      return null;
+    }
+
+    function saveWithdrawalAccount(method, details, passcode) {
+      if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";
+      if (!method) return "Choose a method.";
+      persist(Object.assign({}, data, { withdrawalAccount: { method: method, details: details || "" } }));
+      return null;
+    }
+
+    if (!loaded) return null;
+
+    var body;
+    if (!data.startDate && !editing) {
+      body = h(SetupView, { data: data, onStart: startChallenge });
+    } else if (mode === "broken") {
+      body = h(RedRegretView, {
+        data: data, remainingDays: remainingDays, projectedFund: projectedFund, gapSinceLast: gapSinceLast,
+        logAmount: logAmount, setLogAmount: setLogAmount, canLogNow: canLogNow, onLog: handleLog, petalHostRef: petalHostRef,
+      });
+    } else if (mode === "loss") {
+      body = h(LossPunishView, {
+        data: data, lastLog: lastLog, hoursLeft: hoursLeft, projectedFund: projectedFund,
+        remainingDays: remainingDays, petalHostRef: petalHostRef,
+      });
+    } else if (showFunds) {
+      body = h(FundsView, {
+        data: data, currentFundsOps: currentFundsOps, spendableProfit: spendableProfit,
+        vaultBalance: vaultBalance, vaultReviewCount: vaultReviewCount, onBack: function () { setShowFunds(false); },
+        addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,
+      });
+    } else {
+      body = h(GreenView, {
+        data: data, currentStreak: currentStreak, remainingDays: remainingDays, loggedFund: loggedFund,
+        projectedFund: projectedFund, completionValue: completionValue, targetDate: targetDate, loggedToday: loggedToday,
+        showFestive: showFestive, hoursLeft: hoursLeft, previewFestive: previewFestive, setPreviewFestive: setPreviewFestive,
+        canLogNow: canLogNow, logAmount: logAmount, setLogAmount: setLogAmount, onLog: handleLog, editing: editing,
+        setEditing: setEditing, canEditConfig: canEditConfig, unlockDate: unlockDate, saveConfig: saveConfig,
+        petalHostRef: petalHostRef, crackerHostRef: crackerHostRef, onOpenFunds: function () { setShowFunds(true); },
+      });
+    }
+
+    return h("div", { style: { fontFamily: "'Inter', sans-serif", minHeight: "100vh" } }, body);
   }
 
-  const lastLogDate = sortedLogs.length ? sortedLogs[sortedLogs.length - 1].date : null;
-  const gapSinceLast = lastLogDate ? daysBetween(lastLogDate, todayStr()) : 0;
-  const missedAtLeastOneDay = data.startDate && lastLogDate !== null && gapSinceLast >= 2;
-  const missedFromStartWithNoLog =
-    data.startDate && lastLogDate === null && daysBetween(data.startDate, todayStr()) >= 1;
-  const isBroken = missedAtLeastOneDay || missedFromStartWithNoLog;
-
-  const todayLog = data.logs.find((l) => l.date === todayStr());
-  const loggedToday = !!todayLog;
-
-  const lastLog = sortedLogs.length ? sortedLogs[sortedLogs.length - 1] : null;
-  const lastLogAt = lastLog ? new Date(lastLog.loggedAt || `${lastLog.date}T12:00:00`) : null;
-  const msSinceLastLog = lastLogAt ? now - lastLogAt : Infinity;
-  const within24h = msSinceLastLog < 24 * 60 * 60 * 1000;
-  const celebratingProfit = within24h && lastLog && Number(lastLog.amount) >= 0;
-  const celebratingLoss = within24h && lastLog && Number(lastLog.amount) < 0;
-  const hoursLeft = within24h ? Math.max(0, Math.ceil((24 * 60 * 60 * 1000 - msSinceLastLog) / (60 * 60 * 1000))) : 0;
-
-  const remainingDays = Math.max(data.streakGoalDays - currentStreak, 0);
-  const projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * Number(data.dailyTarget || 0);
-
-  const targetDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 1) : null;
-  let completionValue = 0;
-  if (data.startDate) {
-    for (let i = 0; i < data.streakGoalDays; i++) {
-      const dDate = addDays(data.startDate, i);
-      const log = data.logs.find((l) => l.date === dDate);
-      completionValue += log ? Number(log.amount) : Number(data.dailyTarget || 0);
-    }
-  } else {
-    completionValue = data.streakGoalDays * Number(data.dailyTarget || 0);
+  try {
+    var root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(h(FundStreakTracker));
+  } catch (e) {
+    document.getElementById("root").innerHTML =
+      '<div style="color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:20px;white-space:pre-wrap;">Render failed: ' +
+      (e && e.message ? e.message : String(e)) + '</div>';
   }
-
-  const unlockDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 2) : null;
-  const canEditConfig = !data.startDate || todayStr() >= unlockDate;
-
-  const canLogNow = data.logs.length === 0 || now.getHours() >= LOG_HOUR;
-
-  let mode = "green";
-  if (isBroken) mode = "broken";
-  else if (celebratingLoss) mode = "loss";
-
-  useEffect(() => {
-    if (mode !== "green" || reducedMotion.current) return;
-    const host = petalHostRef.current;
-    if (!host) return;
-    const petals = ["🌿", "🍃", "🌸"];
-    let alive = true;
-    const spawn = () => {
-      if (!alive) return;
-      const el = document.createElement("span");
-      el.textContent = petals[Math.floor(Math.random() * petals.length)];
-      el.style.position = "absolute";
-      el.style.left = Math.random() * 100 + "%";
-      el.style.top = "-40px";
-      el.style.fontSize = 14 + Math.random() * 16 + "px";
-      el.style.opacity = 0.55 + Math.random() * 0.35;
-      const dur = 7 + Math.random() * 6;
-      el.style.animation = `petal-fall ${dur}s linear forwards`;
-      host.appendChild(el);
-      setTimeout(() => el.remove(), dur * 1000 + 100);
-    };
-    const interval = setInterval(spawn, 420);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [mode]);
-
-  const showFestive = celebratingProfit || previewFestive;
-
-  useEffect(() => {
-    if (mode !== "green" || !showFestive || reducedMotion.current) return;
-    const host = crackerHostRef.current;
-    if (!host) return;
-    let alive = true;
-    const burst = () => {
-      if (!alive) return;
-      const colors = ["#FFB627", "#FF6B35", "#FFD23F", "#FF3E7F", "#8CFFDA", "#FFF"];
-      const cx = 15 + Math.random() * 70;
-      const cy = 10 + Math.random() * 40;
-      for (let i = 0; i < 20; i++) {
-        const p = document.createElement("span");
-        const angle = (Math.PI * 2 * i) / 20;
-        const dist = 55 + Math.random() * 65;
-        p.style.position = "absolute";
-        p.style.left = cx + "%";
-        p.style.top = cy + "%";
-        p.style.width = p.style.height = 5 + Math.random() * 4 + "px";
-        p.style.borderRadius = "50%";
-        p.style.background = colors[Math.floor(Math.random() * colors.length)];
-        p.style.boxShadow = `0 0 8px ${colors[Math.floor(Math.random() * colors.length)]}`;
-        p.style.setProperty("--dx", Math.cos(angle) * dist + "px");
-        p.style.setProperty("--dy", Math.sin(angle) * dist + "px");
-        p.style.animation = "cracker-burst 900ms ease-out forwards";
-        host.appendChild(p);
-        setTimeout(() => p.remove(), 950);
-      }
-    };
-    burst();
-    const interval = setInterval(burst, 18000);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [mode, showFestive]);
-
-  useEffect(() => {
-    if (mode === "green" || reducedMotion.current) return;
-    const host = petalHostRef.current;
-    if (!host) return;
-    let alive = true;
-    const spawn = () => {
-      if (!alive) return;
-      const el = document.createElement("span");
-      el.textContent = Math.random() > 0.5 ? "🔥" : "💀";
-      el.style.position = "absolute";
-      el.style.left = Math.random() * 100 + "%";
-      el.style.top = "-30px";
-      el.style.fontSize = 12 + Math.random() * 14 + "px";
-      el.style.opacity = 0.4 + Math.random() * 0.3;
-      const dur = 6 + Math.random() * 5;
-      el.style.animation = `petal-fall ${dur}s linear forwards`;
-      host.appendChild(el);
-      setTimeout(() => el.remove(), dur * 1000 + 100);
-    };
-    const interval = setInterval(spawn, 500);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [mode]);
-
-  const handleLog = () => {
-    if (!canLogNow || loggedToday) return;
-    const amt = Number(logAmount);
-    if (!amt && amt !== 0) return;
-    const next = {
-      ...data,
-      logs: [
-        ...data.logs.filter((l) => l.date !== todayStr()),
-        { date: todayStr(), amount: amt, loggedAt: new Date().toISOString() },
-      ],
-    };
-    persist(next);
-    setLogAmount("");
-  };
-
-  const startChallenge = (cfg) => {
-    persist({ ...data, ...cfg, startDate: cfg.startDate || todayStr(), logs: [] });
-    setEditing(false);
-  };
-
-  const saveConfig = (cfg) => {
-    persist({ ...data, ...cfg });
-    setEditing(false);
-  };
-
-  if (!loaded) return null;
-
-  return (
-    <div style={{ fontFamily: "'Inter', sans-serif", minHeight: "100vh" }}>
-      <style>{FONT_IMPORT}</style>
-      <style>{GLOBAL_CSS}</style>
-
-      {!data.startDate && !editing ? (
-        <SetupView data={data} onStart={startChallenge} />
-      ) : mode === "broken" ? (
-        <RedRegretView
-          data={data}
-          remainingDays={remainingDays}
-          projectedFund={projectedFund}
-          gapSinceLast={gapSinceLast}
-          logAmount={logAmount}
-          setLogAmount={setLogAmount}
-          canLogNow={canLogNow}
-          onLog={handleLog}
-          petalHostRef={petalHostRef}
-        />
-      ) : mode === "loss" ? (
-        <LossPunishView
-          data={data}
-          lastLog={lastLog}
-          hoursLeft={hoursLeft}
-          projectedFund={projectedFund}
-          remainingDays={remainingDays}
-          petalHostRef={petalHostRef}
-        />
-      ) : (
-        <GreenView
-          data={data}
-          currentStreak={currentStreak}
-          remainingDays={remainingDays}
-          loggedFund={loggedFund}
-          projectedFund={projectedFund}
-          completionValue={completionValue}
-          targetDate={targetDate}
-          loggedToday={loggedToday}
-          showFestive={showFestive}
-          hoursLeft={hoursLeft}
-          previewFestive={previewFestive}
-          setPreviewFestive={setPreviewFestive}
-          canLogNow={canLogNow}
-          logAmount={logAmount}
-          setLogAmount={setLogAmount}
-          onLog={handleLog}
-          editing={editing}
-          setEditing={setEditing}
-          canEditConfig={canEditConfig}
-          unlockDate={unlockDate}
-          saveConfig={saveConfig}
-          petalHostRef={petalHostRef}
-          crackerHostRef={crackerHostRef}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ================= SETUP (first run) ================= */
-function SetupView({ data, onStart }) {
-  const [currentFund, setCurrentFund] = useState(data.currentFund);
-  const [dailyTarget, setDailyTarget] = useState(data.dailyTarget);
-  const [streakGoalDays, setStreakGoalDays] = useState(data.streakGoalDays);
-  const [startDate, setStartDate] = useState(todayStr());
-  return (
-    <div style={pageWrap("green")}>
-      <div style={{ position: "relative", maxWidth: 420, margin: "60px auto", textAlign: "center" }}>
-        <div style={{ fontSize: 44, marginBottom: 6 }}>🪔</div>
-        <h1 style={{ fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#EFFFF4", margin: "0 0 4px" }}>
-          Start your consistency streak
-        </h1>
-        <p style={{ fontSize: 13, color: "#9FE8BC", marginBottom: 20 }}>
-          Set your numbers once — they lock until the day before your target date.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, textAlign: "left" }}>
-          <Field label="Current fund (₹)" value={currentFund} setValue={setCurrentFund} />
-          <Field label="Daily target (₹)" value={dailyTarget} setValue={setDailyTarget} />
-          <Field label="Streak goal (days)" value={streakGoalDays} setValue={setStreakGoalDays} />
-          <Field label="Start date" value={startDate} setValue={setStartDate} type="date" />
-        </div>
-        <button
-          onClick={() =>
-            onStart({
-              currentFund: Number(currentFund),
-              dailyTarget: Number(dailyTarget),
-              streakGoalDays: Number(streakGoalDays),
-              startDate,
-            })
-          }
-          style={{ ...primaryBtn, justifyContent: "center", width: "100%", marginTop: 16 }}
-        >
-          <Flame size={16} /> Light the streak
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ================= GREEN THEME (default dashboard) ================= */
-function GreenView({
-  data,
-  currentStreak,
-  remainingDays,
-  loggedFund,
-  projectedFund,
-  completionValue,
-  targetDate,
-  loggedToday,
-  showFestive,
-  hoursLeft,
-  previewFestive,
-  setPreviewFestive,
-  canLogNow,
-  logAmount,
-  setLogAmount,
-  onLog,
-  editing,
-  setEditing,
-  canEditConfig,
-  unlockDate,
-  saveConfig,
-  petalHostRef,
-  crackerHostRef,
-}) {
-  const ring = Math.min(currentStreak / Math.max(data.streakGoalDays, 1), 1);
-  const circumference = 2 * Math.PI * 54;
-
-  return (
-    <div style={pageWrap("green")}>
-      <div ref={petalHostRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }} />
-      {showFestive && <div ref={crackerHostRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 5 }} />}
-      {showFestive && <FestiveAmbience />}
-
-      <div style={{ position: "relative", maxWidth: 480, margin: "0 auto", zIndex: 6 }}>
-        <div style={{ textAlign: "center", marginBottom: 22 }}>
-          <div style={{ fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: "#7FE0AA" }}>
-            Consistency Fund
-          </div>
-          <h1 style={{ fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 400, color: "#B9F3CE", margin: "4px 0 0" }}>
-            {showFestive ? "the flame is still burning bright" : "stay lit, day after day"}
-          </h1>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
-          <div style={{ position: "relative", width: 152, height: 152 }}>
-            <svg width="152" height="152" style={{ transform: "rotate(-90deg)" }}>
-              <circle cx="76" cy="76" r="54" stroke="#0F3A2A" strokeWidth="10" fill="none" />
-              <circle
-                cx="76" cy="76" r="54" stroke="url(#flameGrad)" strokeWidth="10" fill="none" strokeLinecap="round"
-                strokeDasharray={circumference}
-                strokeDashoffset={circumference * (1 - ring)}
-                style={{ transition: "stroke-dashoffset 700ms ease" }}
-              />
-              <defs>
-                <linearGradient id="flameGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#FFD23F" />
-                  <stop offset="100%" stopColor="#39FF88" />
-                </linearGradient>
-              </defs>
-            </svg>
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ fontSize: 26 }}>🪔</span>
-              <span style={{ fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700 }}>{currentStreak}</span>
-              <span style={{ fontSize: 11, color: "#7FE0AA" }}>day streak</span>
-            </div>
-          </div>
-        </div>
-
-        <div style={heroBox}>
-          <div style={{ fontSize: 12, color: "#7FE0AA", marginBottom: 6 }}>Projected fund</div>
-          <div style={{ fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: "#EFFFF4" }}>
-            {inr(projectedFund)}
-          </div>
-          <div style={{ fontSize: 12, color: "#9FE8BC", marginTop: 4 }}>current + logged + (remaining × daily target)</div>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-          <Stat icon={<Wallet size={16} />} label="Current fund" value={inr(data.currentFund)} />
-          <Stat icon={<IndianRupee size={16} />} label="Logged fund" value={inr(loggedFund)} />
-          <Stat icon={<CalendarDays size={16} />} label="Start date" value={fmtDate(data.startDate)} />
-          <Stat icon={<CalendarDays size={16} />} label="Target date" value={fmtDate(targetDate)} />
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <div
-            style={{
-              background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))",
-              border: "1px solid rgba(255,210,63,0.3)",
-              borderRadius: 16,
-              padding: "14px 16px",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#FFD23F", fontSize: 11 }}>
-              <Target size={14} /> If you complete this streak
-            </div>
-            <div style={{ fontFamily: "'Baloo 2', cursive", fontSize: 24, fontWeight: 700, color: "#FFF3CF", marginTop: 2 }}>
-              {inr(completionValue)}
-            </div>
-            <div style={{ fontSize: 11, color: "#F0D28B", marginTop: 2 }}>
-              logged days count as-is, remaining days assumed at daily target
-            </div>
-          </div>
-        </div>
-
-        <div style={{ background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 12 }}>
-          {loggedToday ? (
-            <div style={{ textAlign: "center", color: "#B9F3CE", fontSize: 14 }}>
-              ✓ Today is logged ({inr(Number(data.logs.find((l) => l.date === todayStr())?.amount || 0))}).
-              {showFestive ? ` The celebration keeps going for ${hoursLeft}h more.` : " Come back tomorrow after 10 PM."}
-            </div>
-          ) : canLogNow ? (
-            <>
-              <div style={{ fontSize: 12, color: "#7FE0AA", marginBottom: 8 }}>Log today's profit / loss</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input
-                  type="number"
-                  value={logAmount}
-                  onChange={(e) => setLogAmount(e.target.value)}
-                  placeholder={`e.g. ${data.dailyTarget} or -1200 for a loss`}
-                  style={inputStyle}
-                />
-                <button onClick={onLog} style={primaryBtn}>
-                  <Flame size={16} /> Log
-                </button>
-              </div>
-            </>
-          ) : (
-            <div style={{ textAlign: "center", color: "#7FE0AA", fontSize: 13, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-              <Lock size={16} />
-              Logging opens at 10:00 PM today
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "center", gap: 16, flexWrap: "wrap" }}>
-          <button
-            onClick={() => setEditing((e) => !e)}
-            style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" }}
-          >
-            {canEditConfig ? <Unlock size={12} /> : <Lock size={12} />}
-            {editing ? "close settings" : canEditConfig ? "edit fund / target / goal" : `locked until ${fmtDate(unlockDate)}`}
-          </button>
-
-          {!showFestive && (
-            <button
-              onClick={() => {
-                setPreviewFestive(true);
-                setTimeout(() => setPreviewFestive(false), 15000);
-              }}
-              disabled={previewFestive}
-              style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: previewFestive ? "#FFD23F" : "#7FE0AA", fontSize: 12, cursor: previewFestive ? "default" : "pointer" }}
-            >
-              🎬 {previewFestive ? "previewing… (15s)" : "preview celebration"}
-            </button>
-          )}
-        </div>
-
-        {editing && canEditConfig && <ConfigForm data={data} onSave={saveConfig} />}
-        {editing && !canEditConfig && (
-          <div style={{ marginTop: 10, textAlign: "center", fontSize: 12, color: "#FFB3B3" }}>
-            Settings unlock one day before your target date ({fmtDate(unlockDate)}).
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FestiveAmbience() {
-  return (
-    <>
-      <div style={fairyRow}>
-        {Array.from({ length: 24 }).map((_, i) => (
-          <span
-            key={i}
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: ["#FFD23F", "#FF6B35", "#FF3E7F", "#8CFFDA"][i % 4],
-              boxShadow: `0 0 8px ${["#FFD23F", "#FF6B35", "#FF3E7F", "#8CFFDA"][i % 4]}`,
-              animation: `twinkle ${0.8 + (i % 5) * 0.15}s ease-in-out infinite alternate`,
-              animationDelay: `${i * 0.05}s`,
-            }}
-          />
-        ))}
-      </div>
-      <div style={{ position: "absolute", bottom: 10, left: 10, fontSize: 34, animation: "diya-flicker 1s infinite", zIndex: 5 }}>🪔</div>
-      <div style={{ position: "absolute", bottom: 10, right: 10, fontSize: 34, animation: "diya-flicker 1.1s infinite", zIndex: 5 }}>🪔</div>
-      <div style={{ position: "absolute", top: 40, left: 10, fontSize: 28, animation: "diya-flicker 0.9s infinite", zIndex: 5 }}>🪔</div>
-      <div style={{ position: "absolute", top: 40, right: 10, fontSize: 28, animation: "diya-flicker 1.05s infinite", zIndex: 5 }}>🪔</div>
-    </>
-  );
-}
-
-function Stat({ icon, label, value }) {
-  return (
-    <div style={{ background: "rgba(6,32,23,0.55)", border: "1px solid rgba(127,224,170,0.18)", borderRadius: 14, padding: "12px 14px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#7FE0AA", fontSize: 11 }}>{icon} {label}</div>
-      <div style={{ fontFamily: "'Baloo 2', cursive", fontSize: 16, fontWeight: 700, marginTop: 4 }}>{value}</div>
-    </div>
-  );
-}
-
-function ConfigForm({ data, onSave }) {
-  const [currentFund, setCurrentFund] = useState(data.currentFund);
-  const [dailyTarget, setDailyTarget] = useState(data.dailyTarget);
-  const [streakGoalDays, setStreakGoalDays] = useState(data.streakGoalDays);
-  return (
-    <div style={{ marginTop: 12, background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-      <Field label="Current fund (₹)" value={currentFund} setValue={setCurrentFund} />
-      <Field label="Daily target (₹)" value={dailyTarget} setValue={setDailyTarget} />
-      <Field label="Streak goal (days)" value={streakGoalDays} setValue={setStreakGoalDays} />
-      <div style={{ fontSize: 11, color: "#7FE0AA" }}>Start date stays fixed at {fmtDate(data.startDate)}.</div>
-      <button
-        onClick={() => onSave({ currentFund: Number(currentFund), dailyTarget: Number(dailyTarget), streakGoalDays: Number(streakGoalDays) })}
-        style={{ ...primaryBtn, justifyContent: "center", marginTop: 4 }}
-      >
-        Save
-      </button>
-    </div>
-  );
-}
-
-function Field({ label, value, setValue, type = "number" }) {
-  return (
-    <label style={{ fontSize: 11, color: "#7FE0AA", display: "flex", flexDirection: "column", gap: 4 }}>
-      {label}
-      <input type={type} value={value} onChange={(e) => setValue(e.target.value)} style={inputStyle} />
-    </label>
-  );
-}
-
-function LossPunishView({ data, lastLog, hoursLeft, projectedFund, remainingDays, petalHostRef }) {
-  const amt = Number(lastLog.amount);
-  return (
-    <div style={pageWrap("red")}>
-      <div ref={petalHostRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }} />
-      <div style={{ position: "relative", maxWidth: 440, margin: "80px auto", textAlign: "center" }}>
-        <div style={{ fontSize: 44, marginBottom: 6 }}>🕯️💨</div>
-        <h1 style={{ fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#FFF", margin: "0 0 8px" }}>
-          That day cost you {inr(Math.abs(amt))}
-        </h1>
-        <p style={{ fontSize: 13, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" }}>
-          The streak still counts — you showed up and logged it — but the diya burns red for a full 24 hours as a
-          reminder that day went backwards, not forwards. {hoursLeft > 0 ? `${hoursLeft}h left.` : ""}
-        </p>
-        <div style={{ background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16 }}>
-          <div style={{ fontSize: 12, color: "#FFB3B3" }}>Projected fund still stands at</div>
-          <div style={{ fontFamily: "'Baloo 2', cursive", fontSize: 30, fontWeight: 700, color: "#fff" }}>{inr(projectedFund)}</div>
-          <div style={{ fontSize: 12, color: "#FFB3B3", marginTop: 6 }}>{remainingDays} days still needed</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RedRegretView({ data, remainingDays, projectedFund, gapSinceLast, logAmount, setLogAmount, canLogNow, onLog, petalHostRef }) {
-  const potentialProfit = data.streakGoalDays * Number(data.dailyTarget || 0);
-  return (
-    <div style={pageWrap("red")}>
-      <div ref={petalHostRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }} />
-      <div style={{ position: "relative", maxWidth: 440, margin: "60px auto", textAlign: "center" }}>
-        <div style={{ fontSize: 46, marginBottom: 6 }}>🕯️💨</div>
-        <h1 style={{ fontFamily: "'Baloo 2', cursive", fontSize: 26, margin: "0 0 8px", color: "#FFF" }}>
-          The streak went out.
-        </h1>
-        <p style={{ fontSize: 14, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" }}>
-          {gapSinceLast > 1 ? `${gapSinceLast - 1} day(s) went unlogged. ` : ""}
-          On {inr(data.currentFund)}, {data.streakGoalDays} consistent days at {inr(data.dailyTarget)}/day were worth{" "}
-          <b>{inr(potentialProfit)}</b>. A missed day resets the streak count — remaining days needed is now{" "}
-          <b>{remainingDays}</b>, not less.
-        </p>
-        <div style={{ background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: "#FFB3B3" }}>Projected fund right now</div>
-          <div style={{ fontFamily: "'Baloo 2', cursive", fontSize: 34, fontWeight: 700, color: "#fff" }}>{inr(projectedFund)}</div>
-          <div style={{ fontSize: 12, color: "#FFB3B3", marginTop: 6 }}>Streak reset to 0 · {remainingDays} days still needed</div>
-        </div>
-        {canLogNow ? (
-          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-            <input
-              type="number"
-              value={logAmount}
-              onChange={(e) => setLogAmount(e.target.value)}
-              placeholder={`log today's profit/loss`}
-              style={{ ...inputStyle, background: "rgba(0,0,0,0.4)", borderColor: "#FF7A7A", color: "#fff" }}
-            />
-            <button onClick={onLog} style={{ ...primaryBtn, background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }}>
-              🪔 Relight
-            </button>
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: "#FFB3B3", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            <Lock size={14} /> Relighting opens at 10:00 PM
-          </div>
-        )}
-        <div style={{ fontSize: 11, color: "#FF9B9B", marginTop: 6 }}>Don't let ₹ sit idle again — log the day it happens.</div>
-      </div>
-    </div>
-  );
-}
-
-function pageWrap(mode) {
-  return {
-    position: "relative",
-    minHeight: "100vh",
-    overflow: "hidden",
-    background:
-      mode === "green"
-        ? "radial-gradient(circle at 50% -10%, #175C42 0%, #0B3D2E 45%, #062017 100%)"
-        : "radial-gradient(circle at 50% 0%, #6B0000 0%, #3D0000 55%, #1A0000 100%)",
-    color: mode === "green" ? "#EAF7EF" : "#FFE3E3",
-    padding: "32px 16px 60px",
-    animation: mode === "red" ? "red-pulse 2.6s ease-in-out infinite" : "none",
-  };
-}
-
-const heroBox = {
-  background: "linear-gradient(160deg, rgba(57,255,136,0.10), rgba(57,255,136,0.02))",
-  border: "1px solid rgba(127,224,170,0.25)",
-  borderRadius: 20,
-  padding: "22px 20px",
-  textAlign: "center",
-  marginBottom: 16,
-};
-
-const inputStyle = {
-  flex: 1,
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(127,224,170,0.3)",
-  background: "rgba(6,32,23,0.5)",
-  color: "#EAF7EF",
-  fontSize: 14,
-  outline: "none",
-};
-
-const primaryBtn = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "10px 16px",
-  borderRadius: 10,
-  border: "none",
-  background: "linear-gradient(135deg,#39FF88,#0FA968)",
-  color: "#062017",
-  fontWeight: 700,
-  fontSize: 14,
-  cursor: "pointer",
-};
-
-const fairyRow = { position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-around", padding: "14px 10px", zIndex: 5 };
-
-const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&family=Inter:wght@400;500;600&display=swap');`;
-
-const GLOBAL_CSS = `
-@keyframes petal-fall {
-  0% { transform: translateY(0) rotate(0deg); }
-  100% { transform: translateY(100vh) rotate(180deg); }
-}
-@keyframes cracker-burst {
-  0% { transform: translate(0,0) scale(1); opacity: 1; }
-  100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; }
-}
-@keyframes twinkle {
-  from { opacity: 0.35; transform: scale(0.85); }
-  to { opacity: 1; transform: scale(1.15); }
-}
-@keyframes diya-flicker {
-  0%,100% { filter: drop-shadow(0 0 6px #FFB627); transform: scale(1); }
-  50% { filter: drop-shadow(0 0 14px #FF6B35); transform: scale(1.08); }
-}
-@keyframes red-pulse {
-  0%,100% { filter: brightness(1); }
-  50% { filter: brightness(1.15); }
-}
-@media (prefers-reduced-motion: reduce) {
-  * { animation: none !important; }
-}
-`;
-
-try {
-  const root = ReactDOM.createRoot(document.getElementById("root"));
-  root.render(<FundStreakTracker />);
-} catch (e) {
-  document.getElementById("root").innerHTML =
-    '<div style="color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:20px;white-space:pre-wrap;">Render failed: ' +
-    (e && e.message ? e.message : e) +
-    '</div>';
-}
+})();
 </script>
 </body>
 </html>
