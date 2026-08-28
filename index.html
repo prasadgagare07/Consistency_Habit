@@ -81,14 +81,60 @@
     return (n < 0 ? "-₹" : "₹") + Math.round(Math.abs(n)).toLocaleString("en-IN", { maximumFractionDigits: 0 });
   }
 
+  /* ---------- deterministic daily-profit generator ----------
+     Same date always produces the same number (stable across reloads,
+     effectively a precomputed table without hand-typing 100 values).
+     Range 2312–4123. Weekdays skew toward the low band (2312–3200) most
+     of the time, occasionally the high band (3500–4123). Weekends are
+     always kept in the low band. */
+  function seededRandom(seedStr) {
+    var h = 0;
+    for (var i = 0; i < seedStr.length; i++) { h = (h * 31 + seedStr.charCodeAt(i)) >>> 0; }
+    return (h % 100000) / 100000;
+  }
+  var LOW_MIN = 2312, LOW_MAX = 3200, HIGH_MIN = 3500, HIGH_MAX = 4123;
+  function generateDailyProfit(dateStr) {
+    var day = new Date(dateStr + "T00:00:00").getDay(); // 0 = Sun, 6 = Sat
+    var isWeekend = day === 0 || day === 6;
+    var rLow = seededRandom(dateStr + "-lo");
+    if (isWeekend) return Math.round(LOW_MIN + rLow * (LOW_MAX - LOW_MIN));
+    var pickHigh = seededRandom(dateStr + "-pick") > 0.75; // ~25% of weekdays land in the high band
+    return pickHigh
+      ? Math.round(HIGH_MIN + rLow * (HIGH_MAX - HIGH_MIN))
+      : Math.round(LOW_MIN + rLow * (LOW_MAX - LOW_MIN));
+  }
+  /* fills in any day between startDate and "now" (inclusive of today only after 10pm)
+     that doesn't already have a log; returns a new logs array, or null if nothing to add */
+  function ensureAutoLogs(data, now) {
+    if (!data.startDate) return null;
+    var includeToday = now.getHours() >= LOG_HOUR;
+    var lastNeeded = includeToday ? todayStr() : addDays(todayStr(), -1);
+    if (data.startDate > lastNeeded) return null;
+    var existing = {};
+    data.logs.forEach(function (l) { existing[l.date] = true; });
+    var additions = [];
+    var cursor = data.startDate;
+    var guard = 0;
+    while (cursor <= lastNeeded && guard < 2000) {
+      if (!existing[cursor]) {
+        additions.push({ date: cursor, amount: generateDailyProfit(cursor), loggedAt: cursor + "T22:00:00.000Z", auto: true });
+      }
+      cursor = addDays(cursor, 1);
+      guard++;
+    }
+    return additions.length ? data.logs.concat(additions) : null;
+  }
+
   var STORAGE_KEY = "fund-streak:data";
   var LOG_HOUR = 22; // 10 PM
+  var FIXED_DAILY_TARGET = 3000; // not user-editable
+  var FIXED_CAPITAL = 30000; // 3000 is 10% of this
 
   var DEFAULT_STATE = {
-    currentFund: 10000,
-    dailyTarget: 5000,
-    streakGoalDays: 10,
-    startDate: null,
+    currentFund: FIXED_CAPITAL,
+    dailyTarget: FIXED_DAILY_TARGET,
+    streakGoalDays: 100,
+    startDate: "2026-07-24",
     logs: [],
     withdrawalAccount: null, // { method: 'upi'|'bank'|'usdt'|'tron', details: string }
     deposits: [
@@ -107,6 +153,7 @@
       { date: "2026-08-28", time: "—", amount: 8927, status: "SUCCESS" },
     ],
   };
+
 
   var DEPOSIT_PASSCODE = "Krishna";
   var WITHDRAW_PASSCODE = "Radha";
@@ -185,9 +232,8 @@
   function SetupView(props) {
     var data = props.data, onStart = props.onStart;
     var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];
-    var s2 = useState(data.dailyTarget), dailyTarget = s2[0], setDailyTarget = s2[1];
     var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];
-    var s4 = useState(todayStr()), startDate = s4[0], setStartDate = s4[1];
+    var s4 = useState(data.startDate || todayStr()), startDate = s4[0], setStartDate = s4[1];
 
     return h(
       "div",
@@ -201,8 +247,12 @@
         h(
           "div",
           { style: { display: "flex", flexDirection: "column", gap: 10, textAlign: "left" } },
-          h(Field, { label: "Current fund (₹)", value: currentFund, setValue: setCurrentFund }),
-          h(Field, { label: "Daily target (₹)", value: dailyTarget, setValue: setDailyTarget }),
+          h(Field, { label: "Current fund / capital (₹)", value: currentFund, setValue: setCurrentFund }),
+          h(
+            "div",
+            { style: { fontSize: 11, color: "#7FE0AA" } },
+            "Daily target: " + inr(FIXED_DAILY_TARGET) + " (fixed — " + ((FIXED_DAILY_TARGET / Number(currentFund || 1)) * 100).toFixed(0) + "% of capital)"
+          ),
           h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),
           h(Field, { label: "Start date", value: startDate, setValue: setStartDate, type: "date" })
         ),
@@ -212,7 +262,7 @@
             onClick: function () {
               onStart({
                 currentFund: Number(currentFund),
-                dailyTarget: Number(dailyTarget),
+                dailyTarget: FIXED_DAILY_TARGET,
                 streakGoalDays: Number(streakGoalDays),
                 startDate: startDate,
               });
@@ -391,6 +441,14 @@
               style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
             },
             "💰 withdrawals & deposits"
+          ),
+          h(
+            "button",
+            {
+              onClick: props.onOpenCalendar,
+              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
+            },
+            "📅 calendar"
           )
         ),
         editing && canEditConfig ? h(ConfigForm, { data: data, onSave: saveConfig }) : null,
@@ -445,20 +503,23 @@
   function ConfigForm(props) {
     var data = props.data, onSave = props.onSave;
     var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];
-    var s2 = useState(data.dailyTarget), dailyTarget = s2[0], setDailyTarget = s2[1];
     var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];
     return h(
       "div",
       { style: { marginTop: 12, background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", gap: 8 } },
-      h(Field, { label: "Current fund (₹)", value: currentFund, setValue: setCurrentFund }),
-      h(Field, { label: "Daily target (₹)", value: dailyTarget, setValue: setDailyTarget }),
+      h(Field, { label: "Current fund / capital (₹)", value: currentFund, setValue: setCurrentFund }),
+      h(
+        "div",
+        { style: { fontSize: 11, color: "#7FE0AA" } },
+        "Daily target: " + inr(FIXED_DAILY_TARGET) + " (fixed — " + ((FIXED_DAILY_TARGET / Number(currentFund || 1)) * 100).toFixed(0) + "% of capital)"
+      ),
       h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),
       h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "Start date stays fixed at " + fmtDate(data.startDate) + "."),
       h(
         "button",
         {
           onClick: function () {
-            onSave({ currentFund: Number(currentFund), dailyTarget: Number(dailyTarget), streakGoalDays: Number(streakGoalDays) });
+            onSave({ currentFund: Number(currentFund), dailyTarget: FIXED_DAILY_TARGET, streakGoalDays: Number(streakGoalDays) });
           },
           style: Object.assign({}, primaryBtn, { justifyContent: "center", marginTop: 4 }),
         },
@@ -671,6 +732,102 @@
     );
   }
 
+  function CalendarView(props) {
+    var data = props.data, targetDate = props.targetDate, onBack = props.onBack;
+    var startMonth = data.startDate ? data.startDate.slice(0, 7) : todayStr().slice(0, 7); // "YYYY-MM"
+    var s1 = useState(todayStr().slice(0, 7)), viewMonth = s1[0], setViewMonth = s1[1];
+    var s2 = useState(null), selectedDate = s2[0], setSelectedDate = s2[1];
+
+    var logsByDate = {};
+    data.logs.forEach(function (l) { logsByDate[l.date] = l; });
+
+    function shiftMonth(delta) {
+      var parts = viewMonth.split("-");
+      var d = new Date(Number(parts[0]), Number(parts[1]) - 1 + delta, 1);
+      setViewMonth(d.getFullYear() + "-" + pad(d.getMonth() + 1));
+      setSelectedDate(null);
+    }
+
+    var parts = viewMonth.split("-");
+    var year = Number(parts[0]), monthIdx = Number(parts[1]) - 1;
+    var firstOfMonth = new Date(year, monthIdx, 1);
+    var startWeekday = firstOfMonth.getDay();
+    var daysInMonth = new Date(year, monthIdx + 1, 0).getDate();
+    var monthLabel = firstOfMonth.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+
+    var cells = [];
+    for (var i = 0; i < startWeekday; i++) cells.push(null);
+    for (var day = 1; day <= daysInMonth; day++) {
+      cells.push(year + "-" + pad(monthIdx + 1) + "-" + pad(day));
+    }
+
+    var selectedLog = selectedDate ? logsByDate[selectedDate] : null;
+    var inRange = function (ds) { return data.startDate && ds >= data.startDate && (!targetDate || ds <= targetDate); };
+
+    return h(
+      "div",
+      { style: pageWrap("green") },
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 480, margin: "0 auto" } },
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 } },
+          h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "📅 Daily Profit Calendar")
+        ),
+        h(
+          "div",
+          { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          h("button", { onClick: function () { shiftMonth(-1); }, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 18, cursor: "pointer" } }, "‹"),
+          h("div", { style: { color: "#EAF7EF", fontFamily: "'Baloo 2', cursive", fontSize: 16 } }, monthLabel),
+          h("button", { onClick: function () { shiftMonth(1); }, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 18, cursor: "pointer" } }, "›")
+        ),
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 6 } },
+          ["S", "M", "T", "W", "T", "F", "S"].map(function (d, i) {
+            return h("div", { key: "hd" + i, style: { textAlign: "center", fontSize: 10, color: "#7FE0AA" } }, d);
+          })
+        ),
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 16 } },
+          cells.map(function (ds, i) {
+            if (!ds) return h("div", { key: "e" + i });
+            var log = logsByDate[ds];
+            var active = inRange(ds);
+            var isSelected = ds === selectedDate;
+            var bg = !active ? "rgba(6,32,23,0.3)" : log ? (Number(log.amount) >= 0 ? "rgba(57,255,136,0.18)" : "rgba(255,80,80,0.25)") : "rgba(6,32,23,0.55)";
+            return h(
+              "button",
+              {
+                key: ds,
+                onClick: function () { if (active) setSelectedDate(ds); },
+                disabled: !active,
+                style: {
+                  aspectRatio: "1", borderRadius: 8, border: isSelected ? "2px solid #FFD23F" : "1px solid rgba(127,224,170,0.15)",
+                  background: bg, color: active ? "#EAF7EF" : "#3F5F52", fontSize: 12, cursor: active ? "pointer" : "default", padding: 0,
+                },
+              },
+              String(Number(ds.slice(8, 10)))
+            );
+          })
+        ),
+        selectedLog
+          ? h(
+              "div",
+              { style: heroBox },
+              h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, fmtDate(selectedLog.date) + (selectedLog.auto ? " (auto-logged)" : "")),
+              h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 32, fontWeight: 700, color: Number(selectedLog.amount) >= 0 ? "#EFFFF4" : "#FFB3B3" } }, inr(selectedLog.amount))
+            )
+          : selectedDate
+          ? h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 13 } }, fmtDate(selectedDate) + " — no entry logged.")
+          : h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 12 } }, "Tap a day to see that day's profit.")
+      )
+    );
+  }
+
   function LossPunishView(props) {
     var data = props.data, lastLog = props.lastLog, hoursLeft = props.hoursLeft,
       projectedFund = props.projectedFund, remainingDays = props.remainingDays, petalHostRef = props.petalHostRef;
@@ -769,6 +926,7 @@
     var sn = useState(new Date()), now = sn[0], setNow = sn[1];
     var sp = useState(false), previewFestive = sp[0], setPreviewFestive = sp[1];
     var sf = useState(false), showFunds = sf[0], setShowFunds = sf[1];
+    var sc = useState(false), showCalendar = sc[0], setShowCalendar = sc[1];
     var petalHostRef = useRef(null);
     var crackerHostRef = useRef(null);
     var reducedMotion = useRef(
@@ -830,7 +988,10 @@
     var hoursLeft = within24h ? Math.max(0, Math.ceil((24 * 60 * 60 * 1000 - msSinceLastLog) / (60 * 60 * 1000))) : 0;
 
     var remainingDays = Math.max(data.streakGoalDays - currentStreak, 0);
-    var projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * Number(data.dailyTarget || 0);
+    var daysLoggedCount = data.logs.length;
+    var avgDailyProfit = daysLoggedCount > 0 ? loggedFund / daysLoggedCount : 0;
+    var effectiveDailyRate = avgDailyProfit > Number(data.dailyTarget || 0) ? avgDailyProfit : Number(data.dailyTarget || 0);
+    var projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * effectiveDailyRate;
 
     var targetDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 1) : null;
     var completionValue = 0;
@@ -854,9 +1015,15 @@
 
     var showFestive = celebratingProfit || previewFestive;
 
-    /* continuous petal rain in green/neutral states */
+    /* auto-fill any missed days (including full backfill from a past start date) */
     useEffect(function () {
-      if (mode !== "green" || reducedMotion.current) return;
+      var updated = ensureAutoLogs(data, now);
+      if (updated) persist(Object.assign({}, data, { logs: updated }));
+    }, [data, now]);
+
+    /* petal rain only during the 24h post-profit celebration window */
+    useEffect(function () {
+      if (!showFestive || reducedMotion.current) return;
       var host = petalHostRef.current;
       if (!host) return;
       var petals = ["🌿", "🍃", "🌸"];
@@ -877,7 +1044,7 @@
       }
       var interval = setInterval(spawn, 420);
       return function () { alive = false; clearInterval(interval); };
-    }, [mode]);
+    }, [showFestive]);
 
     /* ambient diwali bursts */
     useEffect(function () {
@@ -1032,6 +1199,8 @@
         vaultBalance: vaultBalance, vaultReviewCount: vaultReviewCount, onBack: function () { setShowFunds(false); },
         addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,
       });
+    } else if (showCalendar) {
+      body = h(CalendarView, { data: data, targetDate: targetDate, onBack: function () { setShowCalendar(false); } });
     } else {
       body = h(GreenView, {
         data: data, currentStreak: currentStreak, remainingDays: remainingDays, loggedFund: loggedFund,
@@ -1040,6 +1209,7 @@
         canLogNow: canLogNow, logAmount: logAmount, setLogAmount: setLogAmount, onLog: handleLog, editing: editing,
         setEditing: setEditing, canEditConfig: canEditConfig, unlockDate: unlockDate, saveConfig: saveConfig,
         petalHostRef: petalHostRef, crackerHostRef: crackerHostRef, onOpenFunds: function () { setShowFunds(true); },
+        onOpenCalendar: function () { setShowCalendar(true); },
       });
     }
 
