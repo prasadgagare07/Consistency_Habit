@@ -201,6 +201,16 @@
 
   var DEPOSIT_PASSCODE = "Krishna";
   var WITHDRAW_PASSCODE = "Radha";
+  /* ---------- app-level pattern lock ----------
+     Dots are numbered like a phone keypad:
+       1 2 3
+       4 5 6
+       7 8 9
+     Change PATTERN_LOCK_SEQUENCE below to set your own unlock pattern
+     (any length 4-9, no repeated dots). This gates the whole page — the
+     dashboard, calendar, and funds screens don't render until it's drawn
+     correctly. It resets on every page load (not remembered in storage). */
+  var PATTERN_LOCK_SEQUENCE = [1, 2, 3, 5, 7, 8, 9];
   var VAULT_THRESHOLD = 5000; // profit above this per day goes to the surplus vault
   var WITHDRAWAL_METHODS = [
     { id: "upi", label: "UPI", icon: "📱" },
@@ -267,12 +277,426 @@
     "@keyframes red-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.15); } }\n" +
     "@keyframes reveal-pop { 0% { opacity: 0; transform: scale(0.75) translateY(10px); } 60% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: scale(1) translateY(0); } }\n" +
     "@keyframes sweep { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }\n" +
+    "@keyframes lock-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-10px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-6px); } 80% { transform: translateX(6px); } }\n" +
     "@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }\n";
 
   // inject global CSS once, up front (plain <style>, no React needed for this)
   var styleTag = document.createElement("style");
   styleTag.textContent = GLOBAL_CSS_TEXT;
   document.head.appendChild(styleTag);
+
+  /* ================= PATTERN LOCK (gates the whole page) ================= */
+  var LOCK_DOTS = [
+    { id: 1, cx: 60, cy: 60 }, { id: 2, cx: 150, cy: 60 }, { id: 3, cx: 240, cy: 60 },
+    { id: 4, cx: 60, cy: 150 }, { id: 5, cx: 150, cy: 150 }, { id: 6, cx: 240, cy: 150 },
+    { id: 7, cx: 60, cy: 240 }, { id: 8, cx: 150, cy: 240 }, { id: 9, cx: 240, cy: 240 },
+  ];
+  function dotById(id) { return LOCK_DOTS.find(function (d) { return d.id === id; }); }
+
+  function PatternLockView(props) {
+    var onUnlock = props.onUnlock;
+    var s1 = useState([]), path = s1[0], setPath = s1[1];
+    var s2 = useState(false), dragging = s2[0], setDragging = s2[1];
+    var s3 = useState(null), cursorPt = s3[0], setCursorPt = s3[1];
+    var s4 = useState(false), showError = s4[0], setShowError = s4[1];
+    var svgRef = useRef(null);
+    var pathRef = useRef([]);
+    pathRef.current = path;
+
+    function svgPoint(evt) {
+      var svg = svgRef.current;
+      if (!svg) return null;
+      var rect = svg.getBoundingClientRect();
+      var x = ((evt.clientX - rect.left) / rect.width) * 300;
+      var y = ((evt.clientY - rect.top) / rect.height) * 300;
+      return { x: x, y: y };
+    }
+
+    function startAt(dotId, evt) {
+      if (evt && evt.preventDefault) evt.preventDefault();
+      setShowError(false);
+      setDragging(true);
+      setPath([dotId]);
+    }
+
+    function enterDot(dotId) {
+      if (!dragging) return;
+      if (pathRef.current.indexOf(dotId) === -1) {
+        setPath(pathRef.current.concat(dotId));
+      }
+    }
+
+    function finish() {
+      if (!dragging) return;
+      setDragging(false);
+      var entered = pathRef.current;
+      var ok = entered.length === PATTERN_LOCK_SEQUENCE.length &&
+        entered.every(function (id, i) { return id === PATTERN_LOCK_SEQUENCE[i]; });
+      if (ok) {
+        onUnlock();
+      } else if (entered.length > 0) {
+        setShowError(true);
+        setTimeout(function () { setPath([]); setShowError(false); }, 550);
+      } else {
+        setPath([]);
+      }
+    }
+
+    useEffect(function () {
+      function onMove(evt) {
+        if (!dragging) return;
+        var pt = svgPoint(evt.touches ? evt.touches[0] : evt);
+        if (pt) setCursorPt(pt);
+        var clientPt = evt.touches ? evt.touches[0] : evt;
+        var el = document.elementFromPoint(clientPt.clientX, clientPt.clientY);
+        if (el && el.getAttribute) {
+          var dotAttr = el.getAttribute("data-dot");
+          if (dotAttr) enterDot(Number(dotAttr));
+        }
+      }
+      function onUp() { finish(); }
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("touchmove", onMove, { passive: false });
+      window.addEventListener("touchend", onUp);
+      return function () {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("touchmove", onMove);
+        window.removeEventListener("touchend", onUp);
+      };
+    }, [dragging]);
+
+    var lineColor = showError ? "#FF6B6B" : "#39FF88";
+    var dotColor = showError ? "#FF6B6B" : "#39FF88";
+
+    var lines = [];
+    for (var i = 0; i < path.length - 1; i++) {
+      var a = dotById(path[i]), b = dotById(path[i + 1]);
+      lines.push(h("line", { key: "l" + i, x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy, stroke: lineColor, strokeWidth: 6, strokeLinecap: "round" }));
+    }
+    if (dragging && path.length && cursorPt) {
+      var last = dotById(path[path.length - 1]);
+      lines.push(h("line", { key: "l-live", x1: last.cx, y1: last.cy, x2: cursorPt.x, y2: cursorPt.y, stroke: lineColor, strokeWidth: 6, strokeLinecap: "round", opacity: 0.6 }));
+    }
+
+    return h(
+      "div",
+      { style: pageWrap("green") },
+      h(
+        "div",
+        {
+          style: {
+            position: "relative", maxWidth: 360, margin: "70px auto", textAlign: "center",
+            animation: showError ? "lock-shake 500ms ease" : "none",
+          },
+        },
+        h("div", { style: { fontSize: 40, marginBottom: 6 } }, "🔒"),
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 22, color: "#EFFFF4", margin: "0 0 4px" } }, "Draw your pattern"),
+        h(
+          "p",
+          { style: { fontSize: 13, color: showError ? "#FFB3B3" : "#9FE8BC", marginBottom: 18 } },
+          showError ? "Wrong pattern — try again." : "Unlock to view the fund."
+        ),
+        h(
+          "svg",
+          {
+            ref: svgRef, viewBox: "0 0 300 300", width: "100%", style: { maxWidth: 300, touchAction: "none", userSelect: "none" },
+            onPointerUp: finish,
+          },
+          lines,
+          LOCK_DOTS.map(function (d) {
+            var active = path.indexOf(d.id) !== -1;
+            return h(
+              "g",
+              { key: d.id },
+              h("circle", {
+                cx: d.cx, cy: d.cy, r: 26, fill: "transparent", "data-dot": d.id,
+                onPointerDown: function (e) { startAt(d.id, e); },
+                onPointerEnter: function () { enterDot(d.id); },
+                style: { cursor: "pointer" },
+              }),
+              h("circle", {
+                cx: d.cx, cy: d.cy, r: active ? 14 : 10, fill: active ? dotColor : "rgba(127,224,170,0.25)",
+                stroke: "rgba(127,224,170,0.5)", strokeWidth: active ? 0 : 1.5,
+                style: { transition: "r 120ms ease, fill 120ms ease", pointerEvents: "none" },
+              })
+            );
+          })
+        )
+      )
+    );
+  }
+
+  /* ================= ALGO ENGINE STATUS (always-on, independent of streak) ================= */
+  var ALGO_TICKER_MESSAGES = [
+    "Scanning BTC options chain for skew anomalies…",
+    "Evaluating IV surface across near-dated expiries…",
+    "Signal confirmed — sizing position within risk band…",
+    "Routing order via low-latency execution node…",
+    "Monitoring open gamma exposure…",
+    "Rebalancing delta hedge…",
+    "No arbitrage detected — holding…",
+    "Order filled — updating book…",
+    "Re-checking funding & open interest…",
+    "Volatility regime: stable — continuing strategy…",
+  ];
+
+  function AlgoEngineStatus(props) {
+    var startDate = props.startDate;
+    var s1 = useState(new Date()), tick = s1[0], setTick = s1[1];
+    var s2 = useState(null), btcPrice = s2[0], setBtcPrice = s2[1];
+    var s3 = useState(null), btcChange = s3[0], setBtcChange = s3[1];
+    var s4 = useState(0), tickerIdx = s4[0], setTickerIdx = s4[1];
+    var s5 = useState(38), latency = s5[0], setLatency = s5[1];
+
+    useEffect(function () {
+      var t = setInterval(function () { setTick(new Date()); }, 1000);
+      return function () { clearInterval(t); };
+    }, []);
+
+    useEffect(function () {
+      var t = setInterval(function () {
+        setTickerIdx(function (i) { return (i + 1) % ALGO_TICKER_MESSAGES.length; });
+        setLatency(28 + Math.floor(Math.random() * 34));
+      }, 3200);
+      return function () { clearInterval(t); };
+    }, []);
+
+    useEffect(function () {
+      var cancelled = false;
+      function fetchPrice() {
+        fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true")
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (cancelled) return;
+            if (d && d.bitcoin) {
+              setBtcPrice(d.bitcoin.usd);
+              setBtcChange(d.bitcoin.usd_24h_change);
+            }
+          })
+          .catch(function () {});
+      }
+      fetchPrice();
+      var t = setInterval(fetchPrice, 30000);
+      return function () { cancelled = true; clearInterval(t); };
+    }, []);
+
+    var uptimeStr = "—";
+    if (startDate) {
+      var start = new Date(startDate + "T00:00:00");
+      var diffMs = tick - start;
+      if (diffMs > 0) {
+        var totalSec = Math.floor(diffMs / 1000);
+        var days = Math.floor(totalSec / 86400);
+        var hours = Math.floor((totalSec % 86400) / 3600);
+        var mins = Math.floor((totalSec % 3600) / 60);
+        var secs = totalSec % 60;
+        uptimeStr = days + "d " + hours + "h " + pad(mins) + "m " + pad(secs) + "s";
+      }
+    }
+
+    return h(
+      "div",
+      {
+        style: {
+          background: "linear-gradient(160deg, rgba(57,255,136,0.10), rgba(6,32,23,0.4))",
+          border: "1px solid rgba(57,255,136,0.25)", borderRadius: 16, padding: "14px 16px", marginBottom: 16,
+        },
+      },
+      h(
+        "div",
+        { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 } },
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 6 } },
+          h("span", {
+            style: {
+              width: 8, height: 8, borderRadius: "50%", background: "#39FF88", boxShadow: "0 0 8px #39FF88",
+              animation: "twinkle 1.2s ease-in-out infinite alternate", display: "inline-block",
+            },
+          }),
+          h("span", { style: { fontSize: 11, color: "#39FF88", fontWeight: 700, letterSpacing: 1 } }, "ALGO ENGINE — LIVE")
+        ),
+        h(
+          "span",
+          { style: { fontSize: 10, color: "#FFD23F", background: "rgba(255,210,63,0.12)", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 20, padding: "2px 8px" } },
+          "⚡ PREMIUM 24/7 EXECUTION"
+        )
+      ),
+      h(
+        "div",
+        { style: { fontSize: 12, color: "#B9F3CE", marginBottom: 10, minHeight: 16, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" } },
+        "› " + ALGO_TICKER_MESSAGES[tickerIdx]
+      ),
+      h(
+        "div",
+        { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 } },
+        h(
+          "div",
+          null,
+          h("div", { style: { color: "#7FE0AA" } }, "BTC/USD"),
+          h(
+            "div",
+            { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 700, color: "#EFFFF4" } },
+            btcPrice ? "$" + Math.round(btcPrice).toLocaleString("en-US") : "loading…"
+          ),
+          btcChange != null
+            ? h(
+                "div",
+                { style: { color: btcChange >= 0 ? "#39FF88" : "#FF6B6B", fontSize: 10 } },
+                (btcChange >= 0 ? "▲ " : "▼ ") + Math.abs(btcChange).toFixed(2) + "% (24h)"
+              )
+            : null
+        ),
+        h(
+          "div",
+          null,
+          h("div", { style: { color: "#7FE0AA" } }, "Engine uptime"),
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 700, color: "#EFFFF4" } }, uptimeStr),
+          h("div", { style: { color: "#7FE0AA", fontSize: 10 } }, "Node ap-south-1 · " + latency + "ms")
+        )
+      )
+    );
+  }
+
+  /* ================= BOOT SEQUENCE (plays once, right after the pattern unlocks) ================= */
+  var BOOT_LINES = [
+    "Initializing secure session…",
+    "Establishing encrypted channel… OK",
+    "Verifying node authentication… OK",
+    "Mounting fund ledger…",
+    "Syncing algo engine handshake…",
+    "Access granted.",
+  ];
+
+  function BootSequenceView(props) {
+    var onDone = props.onDone;
+    var s1 = useState(0), revealed = s1[0], setRevealed = s1[1];
+
+    useEffect(function () {
+      var i = 0;
+      var interval = setInterval(function () {
+        i++;
+        setRevealed(i);
+        if (i >= BOOT_LINES.length) {
+          clearInterval(interval);
+          setTimeout(onDone, 550);
+        }
+      }, 340);
+      return function () { clearInterval(interval); };
+    }, []);
+
+    var pct = Math.round((revealed / BOOT_LINES.length) * 100);
+
+    return h(
+      "div",
+      { style: pageWrap("green") },
+      h(
+        "div",
+        { style: { position: "relative", maxWidth: 380, margin: "110px auto", textAlign: "left" } },
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 14, justifyContent: "center" } },
+          h("span", { style: { fontSize: 22 } }, "🪔"),
+          h("span", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 18, color: "#EFFFF4" } }, "Consistency Fund")
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(57,255,136,0.25)", borderRadius: 12, padding: "14px 16px", fontFamily: "monospace", fontSize: 12, color: "#7FE0AA", minHeight: 150 } },
+          BOOT_LINES.slice(0, revealed).map(function (line, i) {
+            return h("div", { key: i, style: { marginBottom: 6, color: i === revealed - 1 && line === "Access granted." ? "#39FF88" : "#7FE0AA", fontWeight: line === "Access granted." ? 700 : 400 } }, "$ " + line);
+          })
+        ),
+        h(
+          "div",
+          { style: { marginTop: 14, height: 6, borderRadius: 4, background: "rgba(127,224,170,0.15)", overflow: "hidden" } },
+          h("div", { style: { width: pct + "%", height: "100%", background: "linear-gradient(90deg,#39FF88,#0FA968)", transition: "width 300ms ease" } })
+        )
+      )
+    );
+  }
+
+  /* ================= INFRA & SECURITY PANEL (server rack + security ticker, no trade/market data) ================= */
+  var SECURITY_TICKER_MESSAGES = [
+    "🔐 TLS 1.3 · AES-256-GCM channel active",
+    "Session token rotated",
+    "Node authentication verified ✅",
+    "Kill-switch: armed",
+    "Firewall: 0 intrusions detected",
+    "Backup node: standby, ready to fail over",
+    "Ledger checksum verified",
+    "Heartbeat received from execution core",
+  ];
+
+  function InfraSecurityPanel() {
+    var s1 = useState(0), tickerIdx = s1[0], setTickerIdx = s1[1];
+    var s2 = useState(function () {
+      var arr = [];
+      for (var i = 0; i < 24; i++) arr.push(Math.random() > 0.14 ? "#39FF88" : "#FFD23F");
+      return arr;
+    }), ledColors = s2[0], setLedColors = s2[1];
+
+    useEffect(function () {
+      var t = setInterval(function () {
+        setTickerIdx(function (i) { return (i + 1) % SECURITY_TICKER_MESSAGES.length; });
+        setLedColors(function (prev) {
+          var next = prev.slice();
+          var flips = 2 + Math.floor(Math.random() * 3);
+          for (var k = 0; k < flips; k++) {
+            var idx = Math.floor(Math.random() * next.length);
+            next[idx] = Math.random() > 0.14 ? "#39FF88" : "#FFD23F";
+          }
+          return next;
+        });
+      }, 2600);
+      return function () { clearInterval(t); };
+    }, []);
+
+    return h(
+      "div",
+      {
+        style: {
+          background: "linear-gradient(160deg, rgba(127,224,170,0.06), rgba(6,32,23,0.4))",
+          border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: "14px 16px", marginBottom: 16,
+        },
+      },
+      h(
+        "div",
+        { style: { fontSize: 11, color: "#7FE0AA", fontWeight: 700, letterSpacing: 1, marginBottom: 10 } },
+        "🖥️ INFRA & SECURITY"
+      ),
+      h(
+        "div",
+        { style: { display: "flex", gap: 14, alignItems: "center", marginBottom: 10 } },
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 4, background: "rgba(0,0,0,0.3)", padding: 8, borderRadius: 8, border: "1px solid rgba(127,224,170,0.15)" } },
+          ledColors.map(function (c, i) {
+            return h("span", {
+              key: i,
+              style: {
+                width: 7, height: 7, borderRadius: 2, background: c, boxShadow: "0 0 5px " + c,
+                animation: "twinkle " + (0.9 + (i % 5) * 0.18) + "s ease-in-out infinite alternate",
+                animationDelay: (i * 0.04) + "s",
+              },
+            });
+          })
+        ),
+        h(
+          "div",
+          { style: { fontSize: 10, color: "#7FE0AA", lineHeight: 1.5 } },
+          h("div", null, "Colo: Equinix SG1"),
+          h("div", null, "Failover: Standby ✅")
+        )
+      ),
+      h(
+        "div",
+        { style: { fontSize: 12, color: "#B9F3CE", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" } },
+        "› " + SECURITY_TICKER_MESSAGES[tickerIdx]
+      )
+    );
+  }
 
   /* ================= SETUP (first run) ================= */
   function SetupView(props) {
@@ -360,6 +784,8 @@
             "real celebration window: " + (props.hoursLeft > 0 ? props.hoursLeft + "h left" : "not active right now")
           )
         ),
+        h(AlgoEngineStatus, { startDate: data.startDate }),
+        h(InfraSecurityPanel),
         h(
           "div",
           { style: { display: "flex", justifyContent: "center", marginBottom: 18 } },
@@ -1022,6 +1448,8 @@
           "The streak still counts — you showed up and logged it — but the diya burns red for a full 24 hours as a reminder that day went backwards, not forwards. " +
             (hoursLeft > 0 ? hoursLeft + "h left." : "")
         ),
+        h(AlgoEngineStatus, { startDate: data.startDate }),
+        h(InfraSecurityPanel),
         h(
           "div",
           { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16 } },
@@ -1057,6 +1485,8 @@
           h("b", null, remainingDays),
           ", not less."
         ),
+        h(AlgoEngineStatus, { startDate: data.startDate }),
+        h(InfraSecurityPanel),
         h(
           "div",
           { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16, marginBottom: 16 } },
@@ -1096,6 +1526,8 @@
   function FundStreakTracker() {
     var s0 = useState(DEFAULT_STATE), data = s0[0], setData = s0[1];
     var sl = useState(false), loaded = sl[0], setLoaded = sl[1];
+    var su = useState(false), unlocked = su[0], setUnlocked = su[1];
+    var sbt = useState(false), booted = sbt[0], setBooted = sbt[1];
     var se = useState(false), editing = se[0], setEditing = se[1];
     var sa = useState(""), logAmount = sa[0], setLogAmount = sa[1];
     var sn = useState(new Date()), now = sn[0], setNow = sn[1];
@@ -1370,6 +1802,8 @@
       return null;
     }
 
+    if (!unlocked) return h(PatternLockView, { onUnlock: function () { setUnlocked(true); } });
+    if (!booted) return h(BootSequenceView, { onDone: function () { setBooted(true); } });
     if (!loaded) return null;
 
     var body;
