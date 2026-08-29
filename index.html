@@ -128,7 +128,7 @@
   var STORAGE_KEY = "fund-streak:data";
   var LOG_HOUR = 22; // 10 PM
   var FIXED_DAILY_TARGET = 3000; // not user-editable
-  var FIXED_CAPITAL = 30000; // 3000 is 10% of this
+  var FIXED_CAPITAL = 35000;
 
   var DEFAULT_STATE = {
     currentFund: FIXED_CAPITAL,
@@ -138,19 +138,19 @@
     logs: [],
     withdrawalAccount: null, // { method: 'upi'|'bank'|'usdt'|'tron', details: string }
     deposits: [
-      { date: "2026-07-24", time: "—", amount: 30000, status: "SUCCESS" },
-      { date: "2026-08-06", time: "—", amount: 30000, status: "SUCCESS" },
-      { date: "2026-08-20", time: "—", amount: 12000, status: "SUCCESS" },
+      { date: "2026-07-24", time: "10:43 am", amount: 30000, status: "SUCCESS" },
+      { date: "2026-08-06", time: "02:19 pm", amount: 30000, status: "SUCCESS" },
+      { date: "2026-08-20", time: "07:00 pm", amount: 12000, status: "SUCCESS" },
     ],
     withdrawals: [
-      { date: "2026-07-25", time: "—", amount: 4278, status: "SUCCESS" },
-      { date: "2026-07-28", time: "—", amount: 1216, status: "SUCCESS" },
-      { date: "2026-08-02", time: "—", amount: 7520, status: "SUCCESS" },
-      { date: "2026-08-07", time: "—", amount: 16273, status: "SUCCESS" },
-      { date: "2026-08-12", time: "—", amount: 2100, status: "SUCCESS" },
-      { date: "2026-08-16", time: "—", amount: 1000, status: "SUCCESS" },
-      { date: "2026-08-24", time: "—", amount: 17000, status: "SUCCESS" },
-      { date: "2026-08-28", time: "—", amount: 8927, status: "SUCCESS" },
+      { date: "2026-07-25", time: "08:15 am", amount: 4278, status: "SUCCESS" },
+      { date: "2026-07-28", time: "12:23 pm", amount: 1216, status: "SUCCESS" },
+      { date: "2026-08-02", time: "09:12 am", amount: 7520, status: "SUCCESS" },
+      { date: "2026-08-07", time: "04:54 pm", amount: 16273, status: "SUCCESS" },
+      { date: "2026-08-12", time: "09:23 am", amount: 2100, status: "SUCCESS" },
+      { date: "2026-08-16", time: "01:14 pm", amount: 1000, status: "SUCCESS" },
+      { date: "2026-08-24", time: "04:32 am", amount: 17000, status: "SUCCESS" },
+      { date: "2026-08-28", time: "06:30 pm", amount: 8927, status: "SUCCESS" },
     ],
   };
 
@@ -539,7 +539,8 @@
   }
 
   function FundsView(props) {
-    var data = props.data, currentFundsOps = props.currentFundsOps, vaultBalance = props.vaultBalance,
+    var data = props.data, currentFundsOps = props.currentFundsOps, totalProfitLogged = props.totalProfitLogged,
+      estimate100 = props.estimate100, vaultBalance = props.vaultBalance,
       vaultReviewCount = props.vaultReviewCount, onBack = props.onBack, addDeposit = props.addDeposit,
       addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount;
 
@@ -604,9 +605,10 @@
         ),
         h(
           "div",
-          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
-          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds", value: inr(currentFundsOps) }),
-          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit logged", value: inr(props.spendableProfit + vaultBalance) })
+          { style: { display: "grid", gridTemplateColumns: "1fr", gap: 10, marginBottom: 10 } },
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds (capital + deposits − withdrawals)", value: inr(currentFundsOps) }),
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit logged (all days so far)", value: inr(totalProfitLogged) }),
+          h(Stat, { icon: h(Target, { size: 16 }), label: "Estimate at day 100", value: inr(estimate100) })
         ),
         h(
           "div",
@@ -818,7 +820,7 @@
           ? h(
               "div",
               { style: heroBox },
-              h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, fmtDate(selectedLog.date) + (selectedLog.auto ? " (auto-logged)" : "")),
+              h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, fmtDate(selectedLog.date)),
               h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 32, fontWeight: 700, color: Number(selectedLog.amount) >= 0 ? "#EFFFF4" : "#FFB3B3" } }, inr(selectedLog.amount))
             )
           : selectedDate
@@ -1133,10 +1135,14 @@
       var amt = Number(l.amount || 0);
       if (amt > VAULT_THRESHOLD) vaultBalance += amt - VAULT_THRESHOLD;
     });
-    var spendableProfit = loggedFund - vaultBalance; // profit minus whatever sat aside in the vault
     var totalDeposited = data.deposits.reduce(function (s, d) { return s + Number(d.amount || 0); }, 0);
     var totalWithdrawn = data.withdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
-    var currentFundsOps = totalDeposited + spendableProfit - totalWithdrawn;
+    // Current funds is the fixed capital plus deposit/withdrawal activity ONLY — daily profit never touches it.
+    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited - totalWithdrawn;
+    // Total profit is simply the sum of every logged day, unmodified.
+    var totalProfitLogged = loggedFund;
+    // Estimate: current funds plus the full 100-day completion estimate (completionValue computed above).
+    var estimate100 = currentFundsOps + completionValue;
     var vaultReviewCount = data.withdrawals.length % 15;
 
     function nowParts() {
@@ -1195,7 +1201,7 @@
       });
     } else if (showFunds) {
       body = h(FundsView, {
-        data: data, currentFundsOps: currentFundsOps, spendableProfit: spendableProfit,
+        data: data, currentFundsOps: currentFundsOps, totalProfitLogged: totalProfitLogged, estimate100: estimate100,
         vaultBalance: vaultBalance, vaultReviewCount: vaultReviewCount, onBack: function () { setShowFunds(false); },
         addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,
       });
