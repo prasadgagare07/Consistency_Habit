@@ -117,7 +117,7 @@
     var guard = 0;
     while (cursor <= lastNeeded && guard < 2000) {
       if (!existing[cursor]) {
-        additions.push({ date: cursor, amount: generateDailyProfit(cursor), loggedAt: cursor + "T22:00:00.000Z", auto: true });
+        additions.push({ date: cursor, amount: generateDailyProfit(cursor), loggedAt: cursor + "T16:30:00.000Z", auto: true });
       }
       cursor = addDays(cursor, 1);
       guard++;
@@ -307,6 +307,11 @@
             "h1",
             { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 400, color: "#B9F3CE", margin: "4px 0 0" } },
             showFestive ? "the flame is still burning bright" : "stay lit, day after day"
+          ),
+          h(
+            "div",
+            { style: { fontSize: 10, color: "#5FA57F", marginTop: 4 } },
+            "real celebration window: " + (props.hoursLeft > 0 ? props.hoursLeft + "h left" : "not active right now")
           )
         ),
         h(
@@ -354,7 +359,7 @@
         h(
           "div",
           { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
-          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current fund", value: inr(data.currentFund) }),
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Capital (base)", value: inr(data.currentFund) }),
           h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Logged fund", value: inr(loggedFund) }),
           h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Start date", value: fmtDate(data.startDate) }),
           h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Target date", value: fmtDate(targetDate) })
@@ -417,23 +422,21 @@
             canEditConfig ? h(Unlock, { size: 12 }) : h(Lock, { size: 12 }),
             editing ? "close settings" : canEditConfig ? "edit fund / target / goal" : "locked until " + fmtDate(unlockDate)
           ),
-          !showFestive
-            ? h(
-                "button",
-                {
-                  onClick: function () {
-                    setPreviewFestive(true);
-                    setTimeout(function () { setPreviewFestive(false); }, 15000);
-                  },
-                  disabled: previewFestive,
-                  style: {
-                    display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none",
-                    color: previewFestive ? "#FFD23F" : "#7FE0AA", fontSize: 12, cursor: previewFestive ? "default" : "pointer",
-                  },
-                },
-                "🎬 " + (previewFestive ? "previewing… (15s)" : "preview celebration")
-              )
-            : null,
+          h(
+            "button",
+            {
+              onClick: function () {
+                setPreviewFestive(true);
+                setTimeout(function () { setPreviewFestive(false); }, 15000);
+              },
+              disabled: previewFestive,
+              style: {
+                display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none",
+                color: previewFestive ? "#FFD23F" : "#7FE0AA", fontSize: 12, cursor: previewFestive ? "default" : "pointer",
+              },
+            },
+            "🎬 " + (previewFestive ? "previewing… (15s)" : "preview celebration") + (showFestive ? " (live now too)" : "")
+          ),
           h(
             "button",
             {
