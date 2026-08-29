@@ -221,6 +221,8 @@
     "@keyframes twinkle { from { opacity: 0.35; transform: scale(0.85); } to { opacity: 1; transform: scale(1.15); } }\n" +
     "@keyframes diya-flicker { 0%,100% { filter: drop-shadow(0 0 6px #FFB627); transform: scale(1); } 50% { filter: drop-shadow(0 0 14px #FF6B35); transform: scale(1.08); } }\n" +
     "@keyframes red-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.15); } }\n" +
+    "@keyframes reveal-pop { 0% { opacity: 0; transform: scale(0.75) translateY(10px); } 60% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: scale(1) translateY(0); } }\n" +
+    "@keyframes sweep { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }\n" +
     "@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }\n";
 
   // inject global CSS once, up front (plain <style>, no React needed for this)
@@ -820,16 +822,59 @@
           })
         ),
         selectedLog
-          ? h(
-              "div",
-              { style: heroBox },
-              h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, fmtDate(selectedLog.date)),
-              h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 32, fontWeight: 700, color: Number(selectedLog.amount) >= 0 ? "#EFFFF4" : "#FFB3B3" } }, inr(selectedLog.amount))
-            )
+          ? h(RevealCard, { key: selectedLog.date, log: selectedLog })
           : selectedDate
           ? h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 13 } }, fmtDate(selectedDate) + " — no entry logged.")
           : h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 12 } }, "Tap a day to see that day's profit.")
       )
+    );
+  }
+
+  /* cinematic reveal for a selected calendar day: glow + light sweep + count-up */
+  function RevealCard(props) {
+    var log = props.log;
+    var isProfit = Number(log.amount) >= 0;
+    var target = Math.abs(Number(log.amount));
+    var s1 = useState(0), displayed = s1[0], setDisplayed = s1[1];
+
+    useEffect(function () {
+      var start = null;
+      var duration = 700;
+      var raf;
+      function step(ts) {
+        if (!start) start = ts;
+        var progress = Math.min((ts - start) / duration, 1);
+        var eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+        setDisplayed(Math.round(target * eased));
+        if (progress < 1) raf = requestAnimationFrame(step);
+      }
+      raf = requestAnimationFrame(step);
+      return function () { cancelAnimationFrame(raf); };
+    }, [log.date, target]);
+
+    var glow = isProfit ? "57,255,136" : "255,80,80";
+    var textColor = isProfit ? "#EFFFF4" : "#FFD2D2";
+
+    return h(
+      "div",
+      {
+        style: {
+          position: "relative", overflow: "hidden", textAlign: "center", borderRadius: 20, padding: "26px 20px",
+          background: "radial-gradient(circle at 50% 0%, rgba(" + glow + ",0.22) 0%, rgba(6,32,23,0.9) 70%)",
+          border: "1px solid rgba(" + glow + ",0.45)",
+          boxShadow: "0 0 30px rgba(" + glow + ",0.35)",
+          animation: "reveal-pop 480ms cubic-bezier(.2,1.4,.4,1)",
+        },
+      },
+      h("div", { style: { position: "absolute", inset: 0, background: "linear-gradient(115deg, transparent 40%, rgba(255,255,255,0.18) 50%, transparent 60%)", animation: "sweep 900ms ease-out", pointerEvents: "none" } }),
+      h("div", { style: { fontSize: 28, marginBottom: 4 } }, isProfit ? "✨" : "💥"),
+      h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6, letterSpacing: 1 } }, fmtDate(log.date)),
+      h(
+        "div",
+        { style: { fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: textColor, textShadow: "0 0 18px rgba(" + glow + ",0.6)" } },
+        inr(isProfit ? displayed : -displayed)
+      ),
+      h("div", { style: { fontSize: 11, color: isProfit ? "#9FE8BC" : "#FFB3B3", marginTop: 6 } }, isProfit ? "Profit day" : "Loss day")
     );
   }
 
