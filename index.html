@@ -266,7 +266,7 @@
     fontSize: 14,
     cursor: "pointer",
   };
-  var fairyRow = { position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-around", padding: "14px 10px", zIndex: 5 };
+  var fairyRow = { position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-around", padding: "14px 10px", zIndex: 20 };
 
   var GLOBAL_CSS_TEXT =
     "@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&family=Inter:wght@400;500;600&display=swap');\n" +
@@ -763,8 +763,8 @@
     return h(
       "div",
       { style: pageWrap("green") },
-      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
-      showFestive ? h("div", { ref: crackerHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 5 } }) : null,
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 20 } }),
+      showFestive ? h("div", { ref: crackerHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 21 } }) : null,
       showFestive ? h(FestiveAmbience) : null,
       h(
         "div",
@@ -959,10 +959,10 @@
       React.Fragment,
       null,
       h("div", { style: fairyRow }, dots),
-      h("div", { style: { position: "absolute", bottom: 10, left: 10, fontSize: 34, animation: "diya-flicker 1s infinite", zIndex: 5 } }, "🪔"),
-      h("div", { style: { position: "absolute", bottom: 10, right: 10, fontSize: 34, animation: "diya-flicker 1.1s infinite", zIndex: 5 } }, "🪔"),
-      h("div", { style: { position: "absolute", top: 40, left: 10, fontSize: 28, animation: "diya-flicker 0.9s infinite", zIndex: 5 } }, "🪔"),
-      h("div", { style: { position: "absolute", top: 40, right: 10, fontSize: 28, animation: "diya-flicker 1.05s infinite", zIndex: 5 } }, "🪔")
+      h("div", { style: { position: "absolute", bottom: 10, left: 10, fontSize: 34, animation: "diya-flicker 1s infinite", zIndex: 20 } }, "🪔"),
+      h("div", { style: { position: "absolute", bottom: 10, right: 10, fontSize: 34, animation: "diya-flicker 1.1s infinite", zIndex: 20 } }, "🪔"),
+      h("div", { style: { position: "absolute", top: 40, left: 10, fontSize: 28, animation: "diya-flicker 0.9s infinite", zIndex: 20 } }, "🪔"),
+      h("div", { style: { position: "absolute", top: 40, right: 10, fontSize: 28, animation: "diya-flicker 1.05s infinite", zIndex: 20 } }, "🪔")
     );
   }
 
@@ -1436,7 +1436,7 @@
     return h(
       "div",
       { style: pageWrap("red") },
-      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 20 } }),
       h(
         "div",
         { style: { position: "relative", maxWidth: 440, margin: "80px auto", textAlign: "center" } },
@@ -1469,7 +1469,7 @@
     return h(
       "div",
       { style: pageWrap("red") },
-      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 20 } }),
       h(
         "div",
         { style: { position: "relative", maxWidth: 440, margin: "60px auto", textAlign: "center" } },
@@ -1630,7 +1630,7 @@
 
     /* petal rain only during the 24h post-profit celebration window */
     useEffect(function () {
-      if (!showFestive || reducedMotion.current) return;
+      if (!showFestive) return;
       var host = petalHostRef.current;
       if (!host) return;
       var petals = ["🌿", "🍃", "🌸"];
@@ -1655,7 +1655,7 @@
 
     /* ambient diwali bursts */
     useEffect(function () {
-      if (mode !== "green" || !showFestive || reducedMotion.current) return;
+      if (mode !== "green" || !showFestive) return;
       var host = crackerHostRef.current;
       if (!host) return;
       var alive = true;
@@ -1689,7 +1689,7 @@
 
     /* ambient ash/ember during loss/broken punishment */
     useEffect(function () {
-      if (mode === "green" || reducedMotion.current) return;
+      if (mode === "green") return;
       var host = petalHostRef.current;
       if (!host) return;
       var alive = true;
