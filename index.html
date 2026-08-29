@@ -130,6 +130,59 @@
   var FIXED_DAILY_TARGET = 3000; // not user-editable
   var FIXED_CAPITAL = 35000;
 
+  /* ---------- withdrawal amounts derived from the daily-profit generator ----------
+     Each withdrawal's amount is the sum of every day's generated profit from the
+     PREVIOUS withdrawal's date (or the streak's start date, for the first
+     withdrawal) up to the day BEFORE the withdrawal's own date. That block of
+     days is then "swept" into the withdrawal amount, and the next period starts
+     fresh from the withdrawal's own date. Dates/times/status are fixed; only the
+     amount is computed. */
+  var WITHDRAWAL_TEMPLATE = [
+    { date: "2026-07-25", time: "08:15 am", status: "SUCCESS" },
+    { date: "2026-07-28", time: "12:23 pm", status: "SUCCESS" },
+    { date: "2026-08-02", time: "09:12 am", status: "SUCCESS" },
+    { date: "2026-08-07", time: "04:54 pm", status: "SUCCESS" },
+    { date: "2026-08-12", time: "09:23 am", status: "SUCCESS" },
+    { date: "2026-08-16", time: "01:14 pm", status: "SUCCESS" },
+    { date: "2026-08-24", time: "04:32 am", status: "SUCCESS" },
+    { date: "2026-08-28", time: "06:30 pm", status: "SUCCESS" },
+  ];
+  function sumGeneratedProfitRange(startD, endD) {
+    // inclusive on both ends
+    if (!startD || !endD || startD > endD) return 0;
+    var sum = 0;
+    var cursor = startD;
+    var guard = 0;
+    while (cursor <= endD && guard < 3000) {
+      sum += generateDailyProfit(cursor);
+      cursor = addDays(cursor, 1);
+      guard++;
+    }
+    return sum;
+  }
+  function buildWithdrawalsFromTemplate(template, startDate) {
+    var sorted = template.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    var result = [];
+    var periodStart = startDate;
+    for (var i = 0; i < sorted.length; i++) {
+      var w = sorted[i];
+      var periodEnd = addDays(w.date, -1);
+      var amount = sumGeneratedProfitRange(periodStart, periodEnd);
+      result.push({ date: w.date, time: w.time, amount: amount, status: w.status, type: "profit" });
+      periodStart = w.date; // next period picks up from this withdrawal's own date
+    }
+    return result;
+  }
+
+  /* ---------- cash withdrawals ----------
+     These pull from the deposited capital itself (capital + deposits), not from
+     swept daily profit, so they're tracked and totalled completely separately
+     from the profit withdrawals above. */
+  var CASH_WITHDRAWAL_TEMPLATE = [
+    { date: "2026-08-05", time: "03:13 pm", amount: 30000, status: "SUCCESS", type: "cash" },
+    { date: "2026-08-16", time: "09:11 pm", amount: 30000, status: "SUCCESS", type: "cash" },
+  ];
+
   var DEFAULT_STATE = {
     currentFund: FIXED_CAPITAL,
     dailyTarget: FIXED_DAILY_TARGET,
@@ -142,16 +195,7 @@
       { date: "2026-08-06", time: "02:19 pm", amount: 30000, status: "SUCCESS" },
       { date: "2026-08-20", time: "07:00 pm", amount: 12000, status: "SUCCESS" },
     ],
-    withdrawals: [
-      { date: "2026-07-25", time: "08:15 am", amount: 4278, status: "SUCCESS" },
-      { date: "2026-07-28", time: "12:23 pm", amount: 1216, status: "SUCCESS" },
-      { date: "2026-08-02", time: "09:12 am", amount: 7520, status: "SUCCESS" },
-      { date: "2026-08-07", time: "04:54 pm", amount: 16273, status: "SUCCESS" },
-      { date: "2026-08-12", time: "09:23 am", amount: 2100, status: "SUCCESS" },
-      { date: "2026-08-16", time: "01:14 pm", amount: 1000, status: "SUCCESS" },
-      { date: "2026-08-24", time: "04:32 am", amount: 17000, status: "SUCCESS" },
-      { date: "2026-08-28", time: "06:30 pm", amount: 8927, status: "SUCCESS" },
-    ],
+    withdrawals: buildWithdrawalsFromTemplate(WITHDRAWAL_TEMPLATE, "2026-07-24").concat(CASH_WITHDRAWAL_TEMPLATE),
   };
 
 
@@ -547,17 +591,26 @@
     var data = props.data, currentFundsOps = props.currentFundsOps, totalProfitLogged = props.totalProfitLogged,
       estimate100 = props.estimate100, vaultBalance = props.vaultBalance,
       vaultReviewCount = props.vaultReviewCount, onBack = props.onBack, addDeposit = props.addDeposit,
-      addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount;
+      addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount,
+      totalCashWithdrawn = props.totalCashWithdrawn, totalProfitWithdrawn = props.totalProfitWithdrawn,
+      cashWithdrawals = props.cashWithdrawals, profitWithdrawals = props.profitWithdrawals;
 
     var s1 = useState(null), openForm = s1[0], setOpenForm = s1[1]; // 'deposit' | 'withdraw' | 'account' | null
     var s2 = useState(""), amount = s2[0], setAmount = s2[1];
     var s3 = useState(""), passcode = s3[0], setPasscode = s3[1];
     var s4 = useState(""), formError = s4[0], setFormError = s4[1];
     var s5 = useState(data.withdrawalAccount ? data.withdrawalAccount.method : ""), method = s5[0], setMethod = s5[1];
-    var s6 = useState(data.withdrawalAccount ? data.withdrawalAccount.details : ""), details = s6[0], setDetails = s6[1];
+    var af = (data.withdrawalAccount && data.withdrawalAccount.fields) || {};
+    var s6 = useState(af.upiId || ""), upiId = s6[0], setUpiId = s6[1];
+    var s6b = useState(af.accountNumber || ""), accountNumber = s6b[0], setAccountNumber = s6b[1];
+    var s6c = useState(af.bankName || ""), bankName = s6c[0], setBankName = s6c[1];
+    var s6d = useState(af.ifsc || ""), ifsc = s6d[0], setIfsc = s6d[1];
+    var s6e = useState(af.receiverName || ""), receiverName = s6e[0], setReceiverName = s6e[1];
+    var s6f = useState(af.walletAddress || ""), walletAddress = s6f[0], setWalletAddress = s6f[1];
+    var s7 = useState("cash"), withdrawType = s7[0], setWithdrawType = s7[1]; // 'cash' | 'profit'
 
     function resetForm() {
-      setOpenForm(null); setAmount(""); setPasscode(""); setFormError("");
+      setOpenForm(null); setAmount(""); setPasscode(""); setFormError(""); setWithdrawType("cash");
     }
 
     function submitDeposit() {
@@ -566,12 +619,16 @@
       resetForm();
     }
     function submitWithdraw() {
-      var err = addWithdrawal(amount, passcode);
+      var err = addWithdrawal(amount, passcode, withdrawType);
       if (err) { setFormError(err); return; }
       resetForm();
     }
     function submitAccount() {
-      var err = saveWithdrawalAccount(method, details, passcode);
+      var fields = {};
+      if (method === "upi") fields = { upiId: upiId };
+      else if (method === "bank") fields = { accountNumber: accountNumber, bankName: bankName, ifsc: ifsc, receiverName: receiverName };
+      else if (method === "usdt" || method === "tron") fields = { walletAddress: walletAddress };
+      var err = saveWithdrawalAccount(method, fields, passcode);
       if (err) { setFormError(err); return; }
       resetForm();
     }
@@ -579,7 +636,19 @@
     var methodLabel = "";
     if (data.withdrawalAccount) {
       var m = WITHDRAWAL_METHODS.find(function (x) { return x.id === data.withdrawalAccount.method; });
-      methodLabel = (m ? m.icon + " " + m.label : data.withdrawalAccount.method) + (data.withdrawalAccount.details ? " — " + data.withdrawalAccount.details : "");
+      var f = data.withdrawalAccount.fields || {};
+      var parts = [];
+      if (data.withdrawalAccount.method === "upi") {
+        if (f.upiId) parts.push("UPI: " + f.upiId);
+      } else if (data.withdrawalAccount.method === "bank") {
+        if (f.receiverName) parts.push(f.receiverName);
+        if (f.accountNumber) parts.push("A/C " + f.accountNumber);
+        if (f.bankName) parts.push(f.bankName);
+        if (f.ifsc) parts.push("IFSC " + f.ifsc);
+      } else if (data.withdrawalAccount.method === "usdt" || data.withdrawalAccount.method === "tron") {
+        if (f.walletAddress) parts.push(f.walletAddress);
+      }
+      methodLabel = (m ? m.icon + " " + m.label : data.withdrawalAccount.method) + (parts.length ? " — " + parts.join(" · ") : "");
     }
 
     function historyRow(item, key) {
@@ -611,9 +680,16 @@
         h(
           "div",
           { style: { display: "grid", gridTemplateColumns: "1fr", gap: 10, marginBottom: 10 } },
-          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds (capital + deposits − withdrawals)", value: inr(currentFundsOps) }),
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds (capital + deposits − cash withdrawals)", value: inr(currentFundsOps) }),
           h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit logged (all days so far)", value: inr(totalProfitLogged) }),
           h(Stat, { icon: h(Target, { size: 16 }), label: "Estimate at day 100", value: inr(estimate100) })
+        ),
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Total cash withdrawal", value: inr(totalCashWithdrawn) }),
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit withdrawn", value: inr(totalProfitWithdrawn) }),
+          h(Stat, { icon: h(Target, { size: 16 }), label: "Withdrawal pending", value: inr(totalProfitLogged - totalProfitWithdrawn) })
         ),
         h(
           "div",
@@ -660,6 +736,34 @@
           ? h(
               "div",
               { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },
+              h(
+                "div",
+                { style: { display: "flex", gap: 8 } },
+                h(
+                  "button",
+                  {
+                    onClick: function () { setWithdrawType("cash"); },
+                    style: {
+                      flex: 1, padding: "8px", borderRadius: 8, cursor: "pointer",
+                      border: withdrawType === "cash" ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",
+                      background: withdrawType === "cash" ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", fontSize: 12,
+                    },
+                  },
+                  "💸 Cash (from capital)"
+                ),
+                h(
+                  "button",
+                  {
+                    onClick: function () { setWithdrawType("profit"); },
+                    style: {
+                      flex: 1, padding: "8px", borderRadius: 8, cursor: "pointer",
+                      border: withdrawType === "profit" ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",
+                      background: withdrawType === "profit" ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", fontSize: 12,
+                    },
+                  },
+                  "📈 Profit"
+                )
+              ),
               h("input", { type: "number", placeholder: "Withdraw amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),
               h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
               formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
@@ -707,7 +811,20 @@
                     );
                   })
                 ),
-                h("input", { placeholder: "Account / UPI ID / wallet address", value: details, onChange: function (e) { setDetails(e.target.value); }, style: inputStyle }),
+                method === "upi"
+                  ? h("input", { placeholder: "UPI ID", value: upiId, onChange: function (e) { setUpiId(e.target.value); }, style: inputStyle })
+                  : method === "bank"
+                  ? h(
+                      React.Fragment,
+                      null,
+                      h("input", { placeholder: "Bank account number", value: accountNumber, onChange: function (e) { setAccountNumber(e.target.value); }, style: inputStyle }),
+                      h("input", { placeholder: "Bank name", value: bankName, onChange: function (e) { setBankName(e.target.value); }, style: inputStyle }),
+                      h("input", { placeholder: "IFSC code", value: ifsc, onChange: function (e) { setIfsc(e.target.value); }, style: inputStyle }),
+                      h("input", { placeholder: "Receiver name", value: receiverName, onChange: function (e) { setReceiverName(e.target.value); }, style: inputStyle })
+                    )
+                  : method === "usdt" || method === "tron"
+                  ? h("input", { placeholder: "Wallet address", value: walletAddress, onChange: function (e) { setWalletAddress(e.target.value); }, style: inputStyle })
+                  : h("div", { style: { fontSize: 12, color: "#7FE0AA" } }, "Choose a method above first."),
                 h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
                 formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
                 h(
@@ -722,10 +839,18 @@
         h(
           "div",
           { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },
-          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📖 WITHDRAWAL HISTORY"),
-          data.withdrawals.length
-            ? data.withdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "w" + i); })
-            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No withdrawals yet.")
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "💸 CASH WITHDRAWAL HISTORY"),
+          cashWithdrawals.length
+            ? cashWithdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "cw" + i); })
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No cash withdrawals yet.")
+        ),
+        h(
+          "div",
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📈 PROFIT WITHDRAWAL HISTORY"),
+          profitWithdrawals.length
+            ? profitWithdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "pw" + i); })
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No profit withdrawals yet.")
         ),
         h(
           "div",
@@ -1184,10 +1309,15 @@
       if (amt > VAULT_THRESHOLD) vaultBalance += amt - VAULT_THRESHOLD;
     });
     var totalDeposited = data.deposits.reduce(function (s, d) { return s + Number(d.amount || 0); }, 0);
-    var totalWithdrawn = data.withdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
-    // Current funds is the fixed capital plus deposit/withdrawal activity ONLY — daily profit never touches it.
-    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited - totalWithdrawn;
-    // Total profit is simply the sum of every logged day, unmodified.
+    var cashWithdrawals = data.withdrawals.filter(function (w) { return w.type === "cash"; });
+    var profitWithdrawals = data.withdrawals.filter(function (w) { return w.type !== "cash"; });
+    var totalCashWithdrawn = cashWithdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
+    var totalProfitWithdrawn = profitWithdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
+    // Current funds is the fixed capital plus deposits, minus CASH withdrawals only.
+    // Profit withdrawals just sweep already-earned daily profit out — that profit
+    // was never part of the capital base, so it must not reduce it here.
+    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited - totalCashWithdrawn;
+    // Total profit is simply the sum of every logged day, unmodified (whether or not it's been swept into a profit withdrawal).
     var totalProfitLogged = loggedFund;
     // Estimate: current funds plus the full 100-day completion estimate (completionValue computed above).
     var estimate100 = currentFundsOps + completionValue;
@@ -1212,23 +1342,31 @@
       return null;
     }
 
-    function addWithdrawal(amount, passcode) {
+    function addWithdrawal(amount, passcode, type) {
       if (!data.withdrawalAccount) return "Set a withdrawal account first.";
       if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";
       var amt = Number(amount);
       if (!amt || amt <= 0) return "Enter a valid amount.";
-      if (amt > currentFundsOps) return "That's more than your current funds.";
+      var wType = type === "profit" ? "profit" : "cash";
+      if (wType === "cash" && amt > currentFundsOps) return "That's more than your current funds.";
+      if (wType === "profit" && amt > (totalProfitLogged - totalProfitWithdrawn)) return "That's more than your available (un-withdrawn) profit.";
       var np = nowParts();
       persist(Object.assign({}, data, {
-        withdrawals: data.withdrawals.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS" }]),
+        withdrawals: data.withdrawals.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS", type: wType }]),
       }));
       return null;
     }
 
-    function saveWithdrawalAccount(method, details, passcode) {
+    function saveWithdrawalAccount(method, fields, passcode) {
       if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";
       if (!method) return "Choose a method.";
-      persist(Object.assign({}, data, { withdrawalAccount: { method: method, details: details || "" } }));
+      fields = fields || {};
+      if (method === "upi" && !fields.upiId) return "Enter your UPI ID.";
+      if (method === "bank" && (!fields.accountNumber || !fields.bankName || !fields.ifsc || !fields.receiverName)) {
+        return "Fill in account number, bank name, IFSC code, and receiver name.";
+      }
+      if ((method === "usdt" || method === "tron") && !fields.walletAddress) return "Enter a wallet address.";
+      persist(Object.assign({}, data, { withdrawalAccount: { method: method, fields: fields } }));
       return null;
     }
 
@@ -1252,6 +1390,8 @@
         data: data, currentFundsOps: currentFundsOps, totalProfitLogged: totalProfitLogged, estimate100: estimate100,
         vaultBalance: vaultBalance, vaultReviewCount: vaultReviewCount, onBack: function () { setShowFunds(false); },
         addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,
+        totalCashWithdrawn: totalCashWithdrawn, totalProfitWithdrawn: totalProfitWithdrawn,
+        cashWithdrawals: cashWithdrawals, profitWithdrawals: profitWithdrawals,
       });
     } else if (showCalendar) {
       body = h(CalendarView, { data: data, targetDate: targetDate, onBack: function () { setShowCalendar(false); } });
