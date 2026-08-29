@@ -933,8 +933,49 @@
               { style: { marginTop: 10, textAlign: "center", fontSize: 12, color: "#FFB3B3" } },
               "Settings unlock one day before your target date (" + fmtDate(unlockDate) + ")."
             )
-          : null
+          : null,
+        showFestive ? h(FlowerRain, { key: "flower-rain" }) : null
       )
+    );
+  }
+
+  /* Declarative flower rain — rendered as the LAST child inside the dashboard
+     card itself, so it always paints on top of every other card without
+     depending on any z-index/ref timing. Pure CSS animation, no raw DOM. */
+  function FlowerRain(props) {
+    var count = 16;
+    var flowers = ["🌸", "🌺", "🌷", "🌼", "💮"];
+    var seedRef = useRef(null);
+    if (!seedRef.current) {
+      var items = [];
+      for (var i = 0; i < count; i++) {
+        items.push({
+          id: i,
+          left: Math.random() * 96,
+          delay: Math.random() * 6,
+          dur: 6 + Math.random() * 5,
+          size: 14 + Math.random() * 14,
+          flower: flowers[i % flowers.length],
+        });
+      }
+      seedRef.current = items;
+    }
+    return h(
+      "div",
+      { style: { position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" } },
+      seedRef.current.map(function (it) {
+        return h(
+          "span",
+          {
+            key: it.id,
+            style: {
+              position: "absolute", left: it.left + "%", top: "-30px", fontSize: it.size,
+              opacity: 0.8, animation: "petal-fall " + it.dur + "s linear " + it.delay + "s infinite",
+            },
+          },
+          it.flower
+        );
+      })
     );
   }
 
