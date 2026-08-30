@@ -51,12 +51,25 @@
   /* ---------- storage shim (localStorage instead of Claude's window.storage) ---------- */
   var storage = {
     get: function (key) {
-      var v = localStorage.getItem(key);
-      return Promise.resolve(v !== null ? { key: key, value: v } : null);
+      try {
+        var v = localStorage.getItem(key);
+        return Promise.resolve(v !== null ? { key: key, value: v } : null);
+      } catch (e) {
+        return Promise.resolve(null);
+      }
     },
     set: function (key, value) {
-      localStorage.setItem(key, value);
-      return Promise.resolve({ key: key, value: value });
+      try {
+        localStorage.setItem(key, value);
+        // read back immediately to confirm the write actually stuck (some
+        // sandboxed/private-browsing contexts accept setItem silently but
+        // don't persist it, or wipe it on the very next read)
+        var check = localStorage.getItem(key);
+        if (check !== value) return Promise.resolve(null);
+        return Promise.resolve({ key: key, value: value });
+      } catch (e) {
+        return Promise.resolve(null);
+      }
     },
   };
 
@@ -1060,7 +1073,12 @@
       vaultReviewCount = props.vaultReviewCount, onBack = props.onBack, addDeposit = props.addDeposit,
       addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount,
       totalCashWithdrawn = props.totalCashWithdrawn, totalProfitWithdrawn = props.totalProfitWithdrawn,
-      cashWithdrawals = props.cashWithdrawals, profitWithdrawals = props.profitWithdrawals;
+      cashWithdrawals = props.cashWithdrawals, profitWithdrawals = props.profitWithdrawals,
+      lastSavedAt = props.lastSavedAt, storageBroken = props.storageBroken,
+      exportBackup = props.exportBackup, restoreBackup = props.restoreBackup;
+
+    var sRestoreMsg = useState(""), restoreMsg = sRestoreMsg[0], setRestoreMsg = sRestoreMsg[1];
+    var fileInputRef = useRef(null);
 
     var s1 = useState(null), openForm = s1[0], setOpenForm = s1[1]; // 'deposit' | 'withdraw' | 'account' | null
     var s2 = useState(""), amount = s2[0], setAmount = s2[1];
@@ -1144,6 +1162,61 @@
           h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),
           h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "💰 Withdrawals & Deposits")
         ),
+        h(
+          "div",
+          {
+            style: {
+              display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
+              background: storageBroken ? "rgba(255,80,80,0.12)" : "rgba(57,255,136,0.08)",
+              border: "1px solid " + (storageBroken ? "rgba(255,120,120,0.35)" : "rgba(127,224,170,0.2)"),
+              borderRadius: 12, padding: "8px 12px", marginBottom: 12, fontSize: 11,
+            },
+          },
+          h(
+            "span",
+            { style: { color: storageBroken ? "#FFB3B3" : "#7FE0AA" } },
+            storageBroken
+              ? "⚠️ Browser storage isn't persisting on this device — use Export below after every change."
+              : lastSavedAt
+              ? "💾 Saved locally · " + lastSavedAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+              : "💾 Not saved yet"
+          ),
+          h(
+            "div",
+            { style: { display: "flex", gap: 8 } },
+            h(
+              "button",
+              {
+                onClick: function () {
+                  var err = exportBackup();
+                  if (err) setRestoreMsg(err);
+                },
+                style: { background: "transparent", border: "1px solid rgba(127,224,170,0.35)", color: "#7FE0AA", borderRadius: 8, padding: "4px 8px", fontSize: 11, cursor: "pointer" },
+              },
+              "⬇️ Export"
+            ),
+            h(
+              "button",
+              {
+                onClick: function () { fileInputRef.current && fileInputRef.current.click(); },
+                style: { background: "transparent", border: "1px solid rgba(127,224,170,0.35)", color: "#7FE0AA", borderRadius: 8, padding: "4px 8px", fontSize: 11, cursor: "pointer" },
+              },
+              "⬆️ Restore"
+            ),
+            h("input", {
+              ref: fileInputRef, type: "file", accept: "application/json", style: { display: "none" },
+              onChange: function (e) {
+                var f = e.target.files && e.target.files[0];
+                if (!f) return;
+                restoreBackup(f, function (err) { setRestoreMsg(err || "Backup restored ✅"); });
+                e.target.value = "";
+              },
+            })
+          )
+        ),
+        restoreMsg
+          ? h("div", { style: { fontSize: 11, color: restoreMsg.indexOf("✅") !== -1 ? "#7FE0AA" : "#FFB3B3", marginBottom: 10, textAlign: "center" } }, restoreMsg)
+          : null,
         h(
           "div",
           { style: { display: "grid", gridTemplateColumns: "1fr", gap: 10, marginBottom: 10 } },
@@ -1567,6 +1640,8 @@
   function FundStreakTracker() {
     var s0 = useState(DEFAULT_STATE), data = s0[0], setData = s0[1];
     var sl = useState(false), loaded = sl[0], setLoaded = sl[1];
+    var sla = useState(null), lastSavedAt = sla[0], setLastSavedAt = sla[1];
+    var sbr = useState(false), storageBroken = sbr[0], setStorageBroken = sbr[1];
     var su = useState(false), unlocked = su[0], setUnlocked = su[1];
     var sbt = useState(false), booted = sbt[0], setBooted = sbt[1];
     var se = useState(false), editing = se[0], setEditing = se[1];
@@ -1600,7 +1675,10 @@
 
     var persist = useCallback(function (next) {
       setData(next);
-      storage.set(STORAGE_KEY, JSON.stringify(next)).catch(function (e) { console.error("save failed", e); });
+      storage.set(STORAGE_KEY, JSON.stringify(next)).then(function (res) {
+        if (res) { setLastSavedAt(new Date()); setStorageBroken(false); }
+        else { setStorageBroken(true); }
+      }).catch(function (e) { console.error("save failed", e); setStorageBroken(true); });
     }, []);
 
     var sortedLogs = data.logs.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
@@ -1843,6 +1921,42 @@
       return null;
     }
 
+    function exportBackup() {
+      try {
+        var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "consistency-fund-backup-" + todayStr() + ".json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+        return null;
+      } catch (e) {
+        return "Export failed on this device.";
+      }
+    }
+
+    function restoreBackup(fileObj, cb) {
+      try {
+        var reader = new FileReader();
+        reader.onload = function () {
+          try {
+            var parsed = JSON.parse(reader.result);
+            persist(Object.assign({}, DEFAULT_STATE, parsed));
+            cb(null);
+          } catch (e) {
+            cb("That file doesn't look like a valid backup.");
+          }
+        };
+        reader.onerror = function () { cb("Couldn't read that file."); };
+        reader.readAsText(fileObj);
+      } catch (e) {
+        cb("Restore failed on this device.");
+      }
+    }
+
     if (!unlocked) return h(PatternLockView, { onUnlock: function () { setUnlocked(true); } });
     if (!booted) return h(BootSequenceView, { onDone: function () { setBooted(true); } });
     if (!loaded) return null;
@@ -1867,6 +1981,7 @@
         addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,
         totalCashWithdrawn: totalCashWithdrawn, totalProfitWithdrawn: totalProfitWithdrawn,
         cashWithdrawals: cashWithdrawals, profitWithdrawals: profitWithdrawals,
+        lastSavedAt: lastSavedAt, storageBroken: storageBroken, exportBackup: exportBackup, restoreBackup: restoreBackup,
       });
     } else if (showCalendar) {
       body = h(CalendarView, { data: data, targetDate: targetDate, onBack: function () { setShowCalendar(false); } });
