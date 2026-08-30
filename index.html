@@ -1,1335 +1,1890 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Consistency Fund</title>
-<style>
-  html, body, #root { margin: 0; padding: 0; min-height: 100vh; background: #062017; }
-  * { box-sizing: border-box; }
-</style>
-</head>
-<body>
-<div id="root">
-  <div style="color:#7FE0AA;font-family:sans-serif;padding:40px 20px;text-align:center;">
-    Loading… if this never changes, JavaScript didn't run — see note below.
-  </div>
-</div>
-<div id="err-box" style="display:none;color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:12px;white-space:pre-wrap;"></div>
-
-<script>
-  window.addEventListener("error", function (e) {
-    var box = document.getElementById("err-box");
-    box.style.display = "block";
-    box.textContent += "Error: " + e.message + " (" + (e.filename || "?") + ":" + (e.lineno || "?") + ")\n";
-  });
-</script>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load React from cdnjs.cloudflare.com — this network/browser may be blocking that CDN.\n';"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load ReactDOM from cdnjs.cloudflare.com.\n';"></script>
-
-<script>
-(function () {
-  var h = React.createElement;
-  var useState = React.useState, useEffect = React.useEffect, useRef = React.useRef, useCallback = React.useCallback;
-
-  /* ---------- tiny emoji-based icon components ---------- */
-  function makeIcon(glyph) {
-    return function (props) {
-      var size = (props && props.size) || 16;
-      return h("span", { style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, glyph);
-    };
-  }
-  var Flame = makeIcon("🔥");
-  var Wallet = makeIcon("👛");
-  var CalendarDays = makeIcon("📅");
-  var IndianRupee = makeIcon("₹");
-  var Lock = makeIcon("🔒");
-  var Unlock = makeIcon("🔓");
-  var Target = makeIcon("🎯");
-
-  /* ---------- storage shim (localStorage instead of Claude's window.storage) ---------- */
-  var storage = {
-    get: function (key) {
-      var v = localStorage.getItem(key);
-      return Promise.resolve(v !== null ? { key: key, value: v } : null);
-    },
-    set: function (key, value) {
-      localStorage.setItem(key, value);
-      return Promise.resolve({ key: key, value: value });
-    },
-  };
-
-  /* ---------- helpers ---------- */
-  function pad(n) { return String(n).padStart(2, "0"); }
-  function todayStr() {
-    var d = new Date();
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-  }
-  function addDays(dateStr, n) {
-    var d = new Date(dateStr + "T00:00:00");
-    d.setDate(d.getDate() + n);
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-  }
-  function daysBetween(a, b) {
-    return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
-  }
-  function fmtDate(s) {
-    return s ? new Date(s + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";
-  }
-  function inr(n) {
-    return (n < 0 ? "-₹" : "₹") + Math.round(Math.abs(n)).toLocaleString("en-IN", { maximumFractionDigits: 0 });
-  }
-
-  /* ---------- deterministic daily-profit generator ----------
-     Same date always produces the same number (stable across reloads,
-     effectively a precomputed table without hand-typing 100 values).
-     Range 2312–4123. Weekdays skew toward the low band (2312–3200) most
-     of the time, occasionally the high band (3500–4123). Weekends are
-     always kept in the low band. */
-  function seededRandom(seedStr) {
-    var h = 0;
-    for (var i = 0; i < seedStr.length; i++) { h = (h * 31 + seedStr.charCodeAt(i)) >>> 0; }
-    return (h % 100000) / 100000;
-  }
-  var LOW_MIN = 2312, LOW_MAX = 3200, HIGH_MIN = 3500, HIGH_MAX = 4123;
-  function generateDailyProfit(dateStr) {
-    var day = new Date(dateStr + "T00:00:00").getDay(); // 0 = Sun, 6 = Sat
-    var isWeekend = day === 0 || day === 6;
-    var rLow = seededRandom(dateStr + "-lo");
-    if (isWeekend) return Math.round(LOW_MIN + rLow * (LOW_MAX - LOW_MIN));
-    var pickHigh = seededRandom(dateStr + "-pick") > 0.75; // ~25% of weekdays land in the high band
-    return pickHigh
-      ? Math.round(HIGH_MIN + rLow * (HIGH_MAX - HIGH_MIN))
-      : Math.round(LOW_MIN + rLow * (LOW_MAX - LOW_MIN));
-  }
-  var RECONCILE_CUTOFF = "2026-08-27"; // last day treated as "already withdrawn" history
-  var FRESH_START = "2026-08-28"; // first day that counts toward "available to withdraw"
-  /* For dates up to the cutoff, profit is forced to match that day's real withdrawal
-     (or 0 if nothing was withdrawn that day) — so historical profit and historical
-     withdrawals reconcile exactly, by construction. After the cutoff, real generated
-     daily profit accumulates as genuinely fresh, unwithdrawn money. */
-  function getEffectiveDailyProfit(dateStr) {
-    if (dateStr <= RECONCILE_CUTOFF) {
-      var match = DEFAULT_STATE.withdrawals.find(function (w) { return w.date === dateStr; });
-      return match ? Number(match.amount) : 0;
-    }
-    return generateDailyProfit(dateStr);
-  }
-  /* fills in any day between startDate and "now" (inclusive of today only after 10pm)
-     that doesn't already have a log; returns a new logs array, or null if nothing to add */
-  function ensureAutoLogs(data, now) {
-    if (!data.startDate) return null;
-    var includeToday = now.getHours() >= LOG_HOUR;
-    var lastNeeded = includeToday ? todayStr() : addDays(todayStr(), -1);
-    var changed = false;
-
-    // fix any existing auto-logged historical entry that doesn't match the reconciled value
-    var corrected = data.logs.map(function (l) {
-      if (l.auto && l.date <= RECONCILE_CUTOFF) {
-        var correctAmt = getEffectiveDailyProfit(l.date);
-        if (Number(l.amount) !== correctAmt) {
-          changed = true;
-          return Object.assign({}, l, { amount: correctAmt });
-        }
-      }
-      return l;
-    });
-
-    if (data.startDate > lastNeeded) return changed ? corrected : null;
-
-    var existing = {};
-    corrected.forEach(function (l) { existing[l.date] = true; });
-    var additions = [];
-    var cursor = data.startDate;
-    var guard = 0;
-    while (cursor <= lastNeeded && guard < 2000) {
-      if (!existing[cursor]) {
-        additions.push({ date: cursor, amount: getEffectiveDailyProfit(cursor), loggedAt: cursor + "T16:30:00.000Z", auto: true });
-        changed = true;
-      }
-      cursor = addDays(cursor, 1);
-      guard++;
-    }
-    return changed ? corrected.concat(additions) : null;
-  }
-
-  var STORAGE_KEY = "fund-streak:data";
-  var LOG_HOUR = 22; // 10 PM
-  var FIXED_DAILY_TARGET = 3000; // not user-editable
-  var FIXED_CAPITAL = 35000;
-
-  var DEFAULT_STATE = {
-    currentFund: FIXED_CAPITAL,
-    dailyTarget: FIXED_DAILY_TARGET,
-    streakGoalDays: 100,
-    startDate: "2026-07-24",
-    logs: [],
-    withdrawalAccount: null, // { method: 'upi'|'bank'|'usdt'|'tron', details: string }
-    deposits: [
-      { date: "2026-07-24", time: "10:43 am", amount: 30000, status: "SUCCESS" },
-      { date: "2026-08-06", time: "02:19 pm", amount: 30000, status: "SUCCESS" },
-      { date: "2026-08-20", time: "07:00 pm", amount: 12000, status: "SUCCESS" },
-    ],
-    withdrawals: [
-      { date: "2026-07-25", time: "08:15 am", amount: 4278, status: "SUCCESS" },
-      { date: "2026-07-28", time: "12:23 pm", amount: 1216, status: "SUCCESS" },
-      { date: "2026-08-02", time: "09:12 am", amount: 7520, status: "SUCCESS" },
-      { date: "2026-08-07", time: "04:54 pm", amount: 16273, status: "SUCCESS" },
-      { date: "2026-08-12", time: "09:23 am", amount: 2100, status: "SUCCESS" },
-      { date: "2026-08-16", time: "01:14 pm", amount: 1000, status: "SUCCESS" },
-      { date: "2026-08-24", time: "04:32 am", amount: 17000, status: "SUCCESS" },
-      { date: "2026-08-28", time: "06:30 pm", amount: 8927, status: "SUCCESS" },
-    ],
-  };
-
-
-  var DEPOSIT_PASSCODE = "Krishna";
-  var WITHDRAW_PASSCODE = "Radha";
-  var VAULT_THRESHOLD = 5000; // profit above this per day goes to the surplus vault
-  var WITHDRAWAL_METHODS = [
-    { id: "upi", label: "UPI", icon: "📱" },
-    { id: "bank", label: "Bank Account", icon: "🏦" },
-    { id: "usdt", label: "USDT (TRC20)", icon: "₮" },
-    { id: "tron", label: "TRON", icon: "🔺" },
-  ];
-
-  /* ---------- shared styles ---------- */
-  function pageWrap(mode) {
-    return {
-      position: "relative",
-      minHeight: "100vh",
-      overflow: "hidden",
-      background:
-        mode === "green"
-          ? "radial-gradient(circle at 50% -10%, #175C42 0%, #0B3D2E 45%, #062017 100%)"
-          : "radial-gradient(circle at 50% 0%, #6B0000 0%, #3D0000 55%, #1A0000 100%)",
-      color: mode === "green" ? "#EAF7EF" : "#FFE3E3",
-      padding: "32px 16px 60px",
-      animation: mode === "red" ? "red-pulse 2.6s ease-in-out infinite" : "none",
-      fontFamily: "'Inter', sans-serif",
-    };
-  }
-  var heroBox = {
-    background: "linear-gradient(160deg, rgba(57,255,136,0.10), rgba(57,255,136,0.02))",
-    border: "1px solid rgba(127,224,170,0.25)",
-    borderRadius: 20,
-    padding: "22px 20px",
-    textAlign: "center",
-    marginBottom: 16,
-  };
-  var inputStyle = {
-    flex: 1,
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid rgba(127,224,170,0.3)",
-    background: "rgba(6,32,23,0.5)",
-    color: "#EAF7EF",
-    fontSize: 14,
-    outline: "none",
-  };
-  var primaryBtn = {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "10px 16px",
-    borderRadius: 10,
-    border: "none",
-    background: "linear-gradient(135deg,#39FF88,#0FA968)",
-    color: "#062017",
-    fontWeight: 700,
-    fontSize: 14,
-    cursor: "pointer",
-  };
-  var fairyRow = { position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-around", padding: "14px 10px", zIndex: 5 };
-
-  var GLOBAL_CSS_TEXT =
-    "@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&family=Inter:wght@400;500;600&display=swap');\n" +
-    "@keyframes petal-fall { 0% { transform: translateY(0) rotate(0deg); } 100% { transform: translateY(100vh) rotate(180deg); } }\n" +
-    "@keyframes cracker-burst { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; } }\n" +
-    "@keyframes twinkle { from { opacity: 0.35; transform: scale(0.85); } to { opacity: 1; transform: scale(1.15); } }\n" +
-    "@keyframes diya-flicker { 0%,100% { filter: drop-shadow(0 0 6px #FFB627); transform: scale(1); } 50% { filter: drop-shadow(0 0 14px #FF6B35); transform: scale(1.08); } }\n" +
-    "@keyframes red-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.15); } }\n" +
-    "@keyframes reveal-pop { 0% { opacity: 0; transform: scale(0.75) translateY(10px); } 60% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: scale(1) translateY(0); } }\n" +
-    "@keyframes sweep { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }\n" +
-    "@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }\n";
-
-  // inject global CSS once, up front (plain <style>, no React needed for this)
-  var styleTag = document.createElement("style");
-  styleTag.textContent = GLOBAL_CSS_TEXT;
-  document.head.appendChild(styleTag);
-
-  /* ================= SETUP (first run) ================= */
-  function SetupView(props) {
-    var data = props.data, onStart = props.onStart;
-    var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];
-    var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];
-    var s4 = useState(data.startDate || todayStr()), startDate = s4[0], setStartDate = s4[1];
-
-    return h(
-      "div",
-      { style: pageWrap("green") },
-      h(
-        "div",
-        { style: { position: "relative", maxWidth: 420, margin: "60px auto", textAlign: "center" } },
-        h("div", { style: { fontSize: 44, marginBottom: 6 } }, "🪔"),
-        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#EFFFF4", margin: "0 0 4px" } }, "Start your consistency streak"),
-        h("p", { style: { fontSize: 13, color: "#9FE8BC", marginBottom: 20 } }, "Set your numbers once — they lock until the day before your target date."),
-        h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 10, textAlign: "left" } },
-          h(Field, { label: "Current fund / capital (₹)", value: currentFund, setValue: setCurrentFund }),
-          h(
-            "div",
-            { style: { fontSize: 11, color: "#7FE0AA" } },
-            "Daily target: " + inr(FIXED_DAILY_TARGET) + " (fixed — " + ((FIXED_DAILY_TARGET / Number(currentFund || 1)) * 100).toFixed(0) + "% of capital)"
-          ),
-          h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),
-          h(Field, { label: "Start date", value: startDate, setValue: setStartDate, type: "date" })
-        ),
-        h(
-          "button",
-          {
-            onClick: function () {
-              onStart({
-                currentFund: Number(currentFund),
-                dailyTarget: FIXED_DAILY_TARGET,
-                streakGoalDays: Number(streakGoalDays),
-                startDate: startDate,
-              });
-            },
-            style: Object.assign({}, primaryBtn, { justifyContent: "center", width: "100%", marginTop: 16 }),
-          },
-          h(Flame, { size: 16 }),
-          " Light the streak"
-        )
-      )
-    );
-  }
-
-  /* ================= GREEN THEME (default dashboard) ================= */
-  function GreenView(props) {
-    var data = props.data, currentStreak = props.currentStreak, remainingDays = props.remainingDays,
-      loggedFund = props.loggedFund, projectedFund = props.projectedFund, completionValue = props.completionValue,
-      targetDate = props.targetDate, loggedToday = props.loggedToday, showFestive = props.showFestive,
-      hoursLeft = props.hoursLeft, previewFestive = props.previewFestive, setPreviewFestive = props.setPreviewFestive,
-      canLogNow = props.canLogNow, logAmount = props.logAmount, setLogAmount = props.setLogAmount, onLog = props.onLog,
-      editing = props.editing, setEditing = props.setEditing, canEditConfig = props.canEditConfig, unlockDate = props.unlockDate,
-      saveConfig = props.saveConfig, petalHostRef = props.petalHostRef, crackerHostRef = props.crackerHostRef;
-
-    var ring = Math.min(currentStreak / Math.max(data.streakGoalDays, 1), 1);
-    var circumference = 2 * Math.PI * 54;
-    var todaysAmt = Number(((data.logs.find(function (l) { return l.date === todayStr(); })) || {}).amount || 0);
-
-    return h(
-      "div",
-      { style: pageWrap("green") },
-      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
-      showFestive ? h("div", { ref: crackerHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 5 } }) : null,
-      showFestive ? h(FestiveAmbience) : null,
-      h(
-        "div",
-        { style: { position: "relative", maxWidth: 480, margin: "0 auto", zIndex: 6 } },
-        h(
-          "div",
-          { style: { textAlign: "center", marginBottom: 22 } },
-          h("div", { style: { fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: "#7FE0AA" } }, "Consistency Fund"),
-          h(
-            "h1",
-            { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 400, color: "#B9F3CE", margin: "4px 0 0" } },
-            showFestive ? "the flame is still burning bright" : "stay lit, day after day"
-          ),
-          h(
-            "div",
-            { style: { fontSize: 10, color: "#5FA57F", marginTop: 4 } },
-            "real celebration window: " + (props.hoursLeft > 0 ? props.hoursLeft + "h left" : "not active right now")
-          )
-        ),
-        h(
-          "div",
-          { style: { display: "flex", justifyContent: "center", marginBottom: 18 } },
-          h(
-            "div",
-            { style: { position: "relative", width: 152, height: 152 } },
-            h(
-              "svg",
-              { width: 152, height: 152, style: { transform: "rotate(-90deg)" } },
-              h("circle", { cx: 76, cy: 76, r: 54, stroke: "#0F3A2A", strokeWidth: 10, fill: "none" }),
-              h("circle", {
-                cx: 76, cy: 76, r: 54, stroke: "url(#flameGrad)", strokeWidth: 10, fill: "none", strokeLinecap: "round",
-                strokeDasharray: circumference, strokeDashoffset: circumference * (1 - ring),
-                style: { transition: "stroke-dashoffset 700ms ease" },
-              }),
-              h(
-                "defs",
-                null,
-                h(
-                  "linearGradient",
-                  { id: "flameGrad", x1: "0%", y1: "0%", x2: "100%", y2: "100%" },
-                  h("stop", { offset: "0%", stopColor: "#FFD23F" }),
-                  h("stop", { offset: "100%", stopColor: "#39FF88" })
-                )
-              )
-            ),
-            h(
-              "div",
-              { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" } },
-              h("span", { style: { fontSize: 26 } }, "🪔"),
-              h("span", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700 } }, currentStreak),
-              h("span", { style: { fontSize: 11, color: "#7FE0AA" } }, "day streak")
-            )
-          )
-        ),
-        h(
-          "div",
-          { style: heroBox },
-          h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, "Projected fund"),
-          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: "#EFFFF4" } }, inr(projectedFund)),
-          h("div", { style: { fontSize: 12, color: "#9FE8BC", marginTop: 4 } }, "current + logged + (remaining × daily target)")
-        ),
-        h(
-          "div",
-          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },
-          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Capital (base)", value: inr(data.currentFund) }),
-          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Logged fund", value: inr(loggedFund) }),
-          h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Start date", value: fmtDate(data.startDate) }),
-          h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Target date", value: fmtDate(targetDate) })
-        ),
-        h(
-          "div",
-          { style: { marginBottom: 16 } },
-          h(
-            "div",
-            { style: { background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 16, padding: "14px 16px" } },
-            h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#FFD23F", fontSize: 11 } }, h(Target, { size: 14 }), " If you complete this streak"),
-            h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, fontWeight: 700, color: "#FFF3CF", marginTop: 2 } }, inr(completionValue)),
-            h("div", { style: { fontSize: 11, color: "#F0D28B", marginTop: 2 } }, "logged days count as-is, remaining days assumed at daily target")
-          )
-        ),
-        h(
-          "div",
-          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 12 } },
-          loggedToday
-            ? h(
-                "div",
-                { style: { textAlign: "center", color: "#B9F3CE", fontSize: 14 } },
-                "✓ Today is logged (" + inr(todaysAmt) + "). ",
-                showFestive ? "The celebration keeps going for " + hoursLeft + "h more." : "Come back tomorrow after 10 PM."
-              )
-            : canLogNow
-            ? h(
-                React.Fragment,
-                null,
-                h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 8 } }, "Log today's profit / loss"),
-                h(
-                  "div",
-                  { style: { display: "flex", gap: 8 } },
-                  h("input", {
-                    type: "number",
-                    value: logAmount,
-                    onChange: function (e) { setLogAmount(e.target.value); },
-                    placeholder: "e.g. " + data.dailyTarget + " or -1200 for a loss",
-                    style: inputStyle,
-                  }),
-                  h("button", { onClick: onLog, style: primaryBtn }, h(Flame, { size: 16 }), " Log")
-                )
-              )
-            : h(
-                "div",
-                { style: { textAlign: "center", color: "#7FE0AA", fontSize: 13, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },
-                h(Lock, { size: 16 }),
-                "Logging opens at 10:00 PM today"
-              )
-        ),
-        h(
-          "div",
-          { style: { display: "flex", justifyContent: "center", gap: 16, flexWrap: "wrap" } },
-          h(
-            "button",
-            {
-              onClick: function () { setEditing(function (e) { return !e; }); },
-              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
-            },
-            canEditConfig ? h(Unlock, { size: 12 }) : h(Lock, { size: 12 }),
-            editing ? "close settings" : canEditConfig ? "edit fund / target / goal" : "locked until " + fmtDate(unlockDate)
-          ),
-          h(
-            "button",
-            {
-              onClick: function () {
-                setPreviewFestive(true);
-                setTimeout(function () { setPreviewFestive(false); }, 15000);
-              },
-              disabled: previewFestive,
-              style: {
-                display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none",
-                color: previewFestive ? "#FFD23F" : "#7FE0AA", fontSize: 12, cursor: previewFestive ? "default" : "pointer",
-              },
-            },
-            "🎬 " + (previewFestive ? "previewing… (15s)" : "preview celebration") + (showFestive ? " (live now too)" : "")
-          ),
-          h(
-            "button",
-            {
-              onClick: props.onOpenFunds,
-              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
-            },
-            "💰 withdrawals & deposits"
-          ),
-          h(
-            "button",
-            {
-              onClick: props.onOpenCalendar,
-              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },
-            },
-            "📅 calendar"
-          )
-        ),
-        editing && canEditConfig ? h(ConfigForm, { data: data, onSave: saveConfig }) : null,
-        editing && !canEditConfig
-          ? h(
-              "div",
-              { style: { marginTop: 10, textAlign: "center", fontSize: 12, color: "#FFB3B3" } },
-              "Settings unlock one day before your target date (" + fmtDate(unlockDate) + ")."
-            )
-          : null
-      )
-    );
-  }
-
-  function FestiveAmbience() {
-    var colors = ["#FFD23F", "#FF6B35", "#FF3E7F", "#8CFFDA"];
-    var dots = [];
-    for (var i = 0; i < 24; i++) {
-      dots.push(
-        h("span", {
-          key: i,
-          style: {
-            width: 8, height: 8, borderRadius: "50%",
-            background: colors[i % 4],
-            boxShadow: "0 0 8px " + colors[i % 4],
-            animation: "twinkle " + (0.8 + (i % 5) * 0.15) + "s ease-in-out infinite alternate",
-            animationDelay: (i * 0.05) + "s",
-          },
-        })
-      );
-    }
-    return h(
-      React.Fragment,
-      null,
-      h("div", { style: fairyRow }, dots),
-      h("div", { style: { position: "absolute", bottom: 10, left: 10, fontSize: 34, animation: "diya-flicker 1s infinite", zIndex: 5 } }, "🪔"),
-      h("div", { style: { position: "absolute", bottom: 10, right: 10, fontSize: 34, animation: "diya-flicker 1.1s infinite", zIndex: 5 } }, "🪔"),
-      h("div", { style: { position: "absolute", top: 40, left: 10, fontSize: 28, animation: "diya-flicker 0.9s infinite", zIndex: 5 } }, "🪔"),
-      h("div", { style: { position: "absolute", top: 40, right: 10, fontSize: 28, animation: "diya-flicker 1.05s infinite", zIndex: 5 } }, "🪔")
-    );
-  }
-
-  function Stat(props) {
-    return h(
-      "div",
-      { style: { background: "rgba(6,32,23,0.55)", border: "1px solid rgba(127,224,170,0.18)", borderRadius: 14, padding: "12px 14px" } },
-      h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#7FE0AA", fontSize: 11 } }, props.icon, " ", props.label),
-      h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 16, fontWeight: 700, marginTop: 4 } }, props.value)
-    );
-  }
-
-  function ConfigForm(props) {
-    var data = props.data, onSave = props.onSave;
-    var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];
-    var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];
-    return h(
-      "div",
-      { style: { marginTop: 12, background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", gap: 8 } },
-      h(Field, { label: "Current fund / capital (₹)", value: currentFund, setValue: setCurrentFund }),
-      h(
-        "div",
-        { style: { fontSize: 11, color: "#7FE0AA" } },
-        "Daily target: " + inr(FIXED_DAILY_TARGET) + " (fixed — " + ((FIXED_DAILY_TARGET / Number(currentFund || 1)) * 100).toFixed(0) + "% of capital)"
-      ),
-      h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),
-      h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "Start date stays fixed at " + fmtDate(data.startDate) + "."),
-      h(
-        "button",
-        {
-          onClick: function () {
-            onSave({ currentFund: Number(currentFund), dailyTarget: FIXED_DAILY_TARGET, streakGoalDays: Number(streakGoalDays) });
-          },
-          style: Object.assign({}, primaryBtn, { justifyContent: "center", marginTop: 4 }),
-        },
-        "Save"
-      )
-    );
-  }
-
-  function Field(props) {
-    var type = props.type || "number";
-    return h(
-      "label",
-      { style: { fontSize: 11, color: "#7FE0AA", display: "flex", flexDirection: "column", gap: 4 } },
-      props.label,
-      h("input", { type: type, value: props.value, onChange: function (e) { props.setValue(e.target.value); }, style: inputStyle })
-    );
-  }
-
-  function FundsView(props) {
-    var data = props.data, currentFundsOps = props.currentFundsOps, totalProfitLogged = props.totalProfitLogged,
-      estimate100 = props.estimate100, availableToWithdraw = props.availableToWithdraw, vaultBalance = props.vaultBalance,
-      vaultReviewCount = props.vaultReviewCount, onBack = props.onBack, addDeposit = props.addDeposit,
-      addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount;
-
-    var s1 = useState(null), openForm = s1[0], setOpenForm = s1[1]; // 'deposit' | 'withdraw' | 'account' | null
-    var s2 = useState(""), amount = s2[0], setAmount = s2[1];
-    var s3 = useState(""), passcode = s3[0], setPasscode = s3[1];
-    var s4 = useState(""), formError = s4[0], setFormError = s4[1];
-    var s5 = useState(data.withdrawalAccount ? data.withdrawalAccount.method : ""), method = s5[0], setMethod = s5[1];
-    var s6 = useState(data.withdrawalAccount ? data.withdrawalAccount.details : ""), details = s6[0], setDetails = s6[1];
-
-    function resetForm() {
-      setOpenForm(null); setAmount(""); setPasscode(""); setFormError("");
-    }
-
-    function submitDeposit() {
-      var err = addDeposit(amount, passcode);
-      if (err) { setFormError(err); return; }
-      resetForm();
-    }
-    function submitWithdraw() {
-      var err = addWithdrawal(amount, passcode);
-      if (err) { setFormError(err); return; }
-      resetForm();
-    }
-    function submitAccount() {
-      var err = saveWithdrawalAccount(method, details, passcode);
-      if (err) { setFormError(err); return; }
-      resetForm();
-    }
-
-    var methodLabel = "";
-    if (data.withdrawalAccount) {
-      var m = WITHDRAWAL_METHODS.find(function (x) { return x.id === data.withdrawalAccount.method; });
-      methodLabel = (m ? m.icon + " " + m.label : data.withdrawalAccount.method) + (data.withdrawalAccount.details ? " — " + data.withdrawalAccount.details : "");
-    }
-
-    function historyRow(item, key) {
-      return h(
-        "div",
-        { key: key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid rgba(127,224,170,0.12)" } },
-        h(
-          "div",
-          null,
-          h("div", { style: { fontSize: 13, color: "#EAF7EF" } }, fmtDate(item.date) + " · " + item.time),
-          h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "✅ " + (item.status || "SUCCESS"))
-        ),
-        h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 18, fontWeight: 700, color: "#EFFFF4" } }, inr(item.amount))
-      );
-    }
-
-    return h(
-      "div",
-      { style: pageWrap("green") },
-      h(
-        "div",
-        { style: { position: "relative", maxWidth: 480, margin: "0 auto" } },
-        h(
-          "div",
-          { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 } },
-          h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),
-          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "💰 Withdrawals & Deposits")
-        ),
-        h(
-          "div",
-          { style: { display: "grid", gridTemplateColumns: "1fr", gap: 10, marginBottom: 10 } },
-          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds (capital + deposits − withdrawals)", value: inr(currentFundsOps) }),
-          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit logged (all days so far)", value: inr(totalProfitLogged) }),
-          h(Stat, { icon: h(Target, { size: 16 }), label: "Estimate at day 100", value: inr(estimate100) })
-        ),
-        h(
-          "div",
-          {
-            style: {
-              background: "linear-gradient(160deg, rgba(57,255,136,0.16), rgba(57,255,136,0.04))",
-              border: "1px solid rgba(57,255,136,0.35)", borderRadius: 16, padding: "14px 16px", marginBottom: 16,
-            },
-          },
-          h("div", { style: { color: "#7FE0AA", fontSize: 11 } }, "💵 AVAILABLE TO WITHDRAW"),
-          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 28, fontWeight: 700, color: "#EFFFF4", marginTop: 2 } }, inr(availableToWithdraw)),
-          h("div", { style: { fontSize: 11, color: "#9FE8BC", marginTop: 2 } }, "Profit earned since 28 Aug 2026, minus anything already withdrawn from it")
-        ),
-        h(
-          "div",
-          { style: { background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 16, padding: "14px 16px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" } },
-          h(
-            "div",
-            null,
-            h("div", { style: { color: "#FFD23F", fontSize: 11 } }, "🏦 SURPLUS VAULT"),
-            h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700, color: "#FFF3CF" } }, inr(vaultBalance)),
-            h("div", { style: { fontSize: 11, color: "#F0D28B", marginTop: 2 } }, "Profit above " + inr(VAULT_THRESHOLD) + "/day is stored here")
-          ),
-          h("div", { style: { color: "#FFD23F", fontSize: 12 } }, vaultReviewCount + " / 15 withdrawals")
-        ),
-        h(
-          "div",
-          { style: { display: "flex", gap: 10, marginBottom: 16 } },
-          h(
-            "button",
-            { onClick: function () { setOpenForm(openForm === "deposit" ? null : "deposit"); setFormError(""); }, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) },
-            "➕ Deposit"
-          ),
-          h(
-            "button",
-            { onClick: function () { setOpenForm(openForm === "withdraw" ? null : "withdraw"); setFormError(""); }, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center", background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) },
-            "💸 Withdraw"
-          )
-        ),
-        openForm === "deposit"
-          ? h(
-              "div",
-              { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },
-              h("input", { type: "number", placeholder: "Deposit amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),
-              h("input", { type: "password", placeholder: "Deposit passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
-              formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
-              h(
-                "div",
-                { style: { display: "flex", gap: 8 } },
-                h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),
-                h("button", { onClick: submitDeposit, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) }, "Confirm")
-              )
-            )
-          : null,
-        openForm === "withdraw"
-          ? h(
-              "div",
-              { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },
-              h("input", { type: "number", placeholder: "Withdraw amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),
-              h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
-              formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
-              h(
-                "div",
-                { style: { display: "flex", gap: 8 } },
-                h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),
-                h("button", { onClick: submitWithdraw, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center", background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) }, "Confirm")
-              )
-            )
-          : null,
-        h(
-          "div",
-          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },
-          h(
-            "div",
-            { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-            h("div", { style: { color: "#7FE0AA", fontSize: 12 } }, "🏦 WITHDRAWAL ACCOUNT"),
-            h(
-              "button",
-              { onClick: function () { setOpenForm(openForm === "account" ? null : "account"); setFormError(""); }, style: { background: "transparent", border: "none", color: "#FFD23F", fontSize: 12, cursor: "pointer" } },
-              "✏️ Edit"
-            )
-          ),
-          h("div", { style: { color: "#EAF7EF", fontSize: 13 } }, methodLabel || "Not set — tap Edit to add one"),
-          openForm === "account"
-            ? h(
-                "div",
-                { style: { marginTop: 12, display: "flex", flexDirection: "column", gap: 8 } },
-                h(
-                  "div",
-                  { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
-                  WITHDRAWAL_METHODS.map(function (m) {
-                    return h(
-                      "button",
-                      {
-                        key: m.id,
-                        onClick: function () { setMethod(m.id); },
-                        style: {
-                          padding: "10px", borderRadius: 10, border: method === m.id ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",
-                          background: method === m.id ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", cursor: "pointer",
-                        },
-                      },
-                      m.icon + " " + m.label
-                    );
-                  })
-                ),
-                h("input", { placeholder: "Account / UPI ID / wallet address", value: details, onChange: function (e) { setDetails(e.target.value); }, style: inputStyle }),
-                h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),
-                formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,
-                h(
-                  "div",
-                  { style: { display: "flex", gap: 8 } },
-                  h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),
-                  h("button", { onClick: submitAccount, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) }, "Save Account")
-                )
-              )
-            : null
-        ),
-        h(
-          "div",
-          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },
-          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📖 WITHDRAWAL HISTORY"),
-          data.withdrawals.length
-            ? data.withdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "w" + i); })
-            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No withdrawals yet.")
-        ),
-        h(
-          "div",
-          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16 } },
-          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📥 DEPOSIT HISTORY"),
-          data.deposits.length
-            ? data.deposits.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (d, i) { return historyRow(d, "d" + i); })
-            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No deposits yet.")
-        )
-      )
-    );
-  }
-
-  function CalendarView(props) {
-    var data = props.data, targetDate = props.targetDate, onBack = props.onBack;
-    var startMonth = data.startDate ? data.startDate.slice(0, 7) : todayStr().slice(0, 7); // "YYYY-MM"
-    var s1 = useState(todayStr().slice(0, 7)), viewMonth = s1[0], setViewMonth = s1[1];
-    var s2 = useState(null), selectedDate = s2[0], setSelectedDate = s2[1];
-
-    var logsByDate = {};
-    data.logs.forEach(function (l) { logsByDate[l.date] = l; });
-
-    function shiftMonth(delta) {
-      var parts = viewMonth.split("-");
-      var d = new Date(Number(parts[0]), Number(parts[1]) - 1 + delta, 1);
-      setViewMonth(d.getFullYear() + "-" + pad(d.getMonth() + 1));
-      setSelectedDate(null);
-    }
-
-    var parts = viewMonth.split("-");
-    var year = Number(parts[0]), monthIdx = Number(parts[1]) - 1;
-    var firstOfMonth = new Date(year, monthIdx, 1);
-    var startWeekday = firstOfMonth.getDay();
-    var daysInMonth = new Date(year, monthIdx + 1, 0).getDate();
-    var monthLabel = firstOfMonth.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-
-    var cells = [];
-    for (var i = 0; i < startWeekday; i++) cells.push(null);
-    for (var day = 1; day <= daysInMonth; day++) {
-      cells.push(year + "-" + pad(monthIdx + 1) + "-" + pad(day));
-    }
-
-    var selectedLog = selectedDate ? logsByDate[selectedDate] : null;
-    var inRange = function (ds) { return data.startDate && ds >= data.startDate && (!targetDate || ds <= targetDate); };
-
-    return h(
-      "div",
-      { style: pageWrap("green") },
-      h(
-        "div",
-        { style: { position: "relative", maxWidth: 480, margin: "0 auto" } },
-        h(
-          "div",
-          { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 } },
-          h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),
-          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "📅 Daily Profit Calendar")
-        ),
-        h(
-          "div",
-          { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
-          h("button", { onClick: function () { shiftMonth(-1); }, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 18, cursor: "pointer" } }, "‹"),
-          h("div", { style: { color: "#EAF7EF", fontFamily: "'Baloo 2', cursive", fontSize: 16 } }, monthLabel),
-          h("button", { onClick: function () { shiftMonth(1); }, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 18, cursor: "pointer" } }, "›")
-        ),
-        h(
-          "div",
-          { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 6 } },
-          ["S", "M", "T", "W", "T", "F", "S"].map(function (d, i) {
-            return h("div", { key: "hd" + i, style: { textAlign: "center", fontSize: 10, color: "#7FE0AA" } }, d);
-          })
-        ),
-        h(
-          "div",
-          { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 16 } },
-          cells.map(function (ds, i) {
-            if (!ds) return h("div", { key: "e" + i });
-            var log = logsByDate[ds];
-            var active = inRange(ds);
-            var isSelected = ds === selectedDate;
-            var bg = !active ? "rgba(6,32,23,0.3)" : log ? (Number(log.amount) >= 0 ? "rgba(57,255,136,0.18)" : "rgba(255,80,80,0.25)") : "rgba(6,32,23,0.55)";
-            return h(
-              "button",
-              {
-                key: ds,
-                onClick: function () { if (active) setSelectedDate(ds); },
-                disabled: !active,
-                style: {
-                  aspectRatio: "1", borderRadius: 8, border: isSelected ? "2px solid #FFD23F" : "1px solid rgba(127,224,170,0.15)",
-                  background: bg, color: active ? "#EAF7EF" : "#3F5F52", fontSize: 12, cursor: active ? "pointer" : "default", padding: 0,
-                },
-              },
-              String(Number(ds.slice(8, 10)))
-            );
-          })
-        ),
-        selectedLog
-          ? h(RevealCard, { key: selectedLog.date, log: selectedLog })
-          : selectedDate
-          ? h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 13 } }, fmtDate(selectedDate) + " — no entry logged.")
-          : h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 12 } }, "Tap a day to see that day's profit.")
-      )
-    );
-  }
-
-  /* cinematic reveal for a selected calendar day: glow + light sweep + count-up */
-  function RevealCard(props) {
-    var log = props.log;
-    var isProfit = Number(log.amount) >= 0;
-    var target = Math.abs(Number(log.amount));
-    var s1 = useState(0), displayed = s1[0], setDisplayed = s1[1];
-
-    useEffect(function () {
-      var start = null;
-      var duration = 700;
-      var raf;
-      function step(ts) {
-        if (!start) start = ts;
-        var progress = Math.min((ts - start) / duration, 1);
-        var eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
-        setDisplayed(Math.round(target * eased));
-        if (progress < 1) raf = requestAnimationFrame(step);
-      }
-      raf = requestAnimationFrame(step);
-      return function () { cancelAnimationFrame(raf); };
-    }, [log.date, target]);
-
-    var glow = isProfit ? "57,255,136" : "255,80,80";
-    var textColor = isProfit ? "#EFFFF4" : "#FFD2D2";
-
-    return h(
-      "div",
-      {
-        style: {
-          position: "relative", overflow: "hidden", textAlign: "center", borderRadius: 20, padding: "26px 20px",
-          background: "radial-gradient(circle at 50% 0%, rgba(" + glow + ",0.22) 0%, rgba(6,32,23,0.9) 70%)",
-          border: "1px solid rgba(" + glow + ",0.45)",
-          boxShadow: "0 0 30px rgba(" + glow + ",0.35)",
-          animation: "reveal-pop 480ms cubic-bezier(.2,1.4,.4,1)",
-        },
-      },
-      h("div", { style: { position: "absolute", inset: 0, background: "linear-gradient(115deg, transparent 40%, rgba(255,255,255,0.18) 50%, transparent 60%)", animation: "sweep 900ms ease-out", pointerEvents: "none" } }),
-      h("div", { style: { fontSize: 28, marginBottom: 4 } }, isProfit ? "✨" : "💥"),
-      h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6, letterSpacing: 1 } }, fmtDate(log.date)),
-      h(
-        "div",
-        { style: { fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: textColor, textShadow: "0 0 18px rgba(" + glow + ",0.6)" } },
-        inr(isProfit ? displayed : -displayed)
-      ),
-      h("div", { style: { fontSize: 11, color: isProfit ? "#9FE8BC" : "#FFB3B3", marginTop: 6 } }, isProfit ? "Profit day" : "Loss day")
-    );
-  }
-
-  function LossPunishView(props) {
-    var data = props.data, lastLog = props.lastLog, hoursLeft = props.hoursLeft,
-      projectedFund = props.projectedFund, remainingDays = props.remainingDays, petalHostRef = props.petalHostRef;
-    var amt = Number(lastLog.amount);
-    return h(
-      "div",
-      { style: pageWrap("red") },
-      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
-      h(
-        "div",
-        { style: { position: "relative", maxWidth: 440, margin: "80px auto", textAlign: "center" } },
-        h("div", { style: { fontSize: 44, marginBottom: 6 } }, "🕯️💨"),
-        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#FFF", margin: "0 0 8px" } }, "That day cost you " + inr(Math.abs(amt))),
-        h(
-          "p",
-          { style: { fontSize: 13, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" } },
-          "The streak still counts — you showed up and logged it — but the diya burns red for a full 24 hours as a reminder that day went backwards, not forwards. " +
-            (hoursLeft > 0 ? hoursLeft + "h left." : "")
-        ),
-        h(
-          "div",
-          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16 } },
-          h("div", { style: { fontSize: 12, color: "#FFB3B3" } }, "Projected fund still stands at"),
-          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 30, fontWeight: 700, color: "#fff" } }, inr(projectedFund)),
-          h("div", { style: { fontSize: 12, color: "#FFB3B3", marginTop: 6 } }, remainingDays + " days still needed")
-        )
-      )
-    );
-  }
-
-  function RedRegretView(props) {
-    var data = props.data, remainingDays = props.remainingDays, projectedFund = props.projectedFund,
-      gapSinceLast = props.gapSinceLast, logAmount = props.logAmount, setLogAmount = props.setLogAmount,
-      canLogNow = props.canLogNow, onLog = props.onLog, petalHostRef = props.petalHostRef;
-    var potentialProfit = data.streakGoalDays * Number(data.dailyTarget || 0);
-    return h(
-      "div",
-      { style: pageWrap("red") },
-      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" } }),
-      h(
-        "div",
-        { style: { position: "relative", maxWidth: 440, margin: "60px auto", textAlign: "center" } },
-        h("div", { style: { fontSize: 46, marginBottom: 6 } }, "🕯️💨"),
-        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, margin: "0 0 8px", color: "#FFF" } }, "The streak went out."),
-        h(
-          "p",
-          { style: { fontSize: 14, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" } },
-          (gapSinceLast > 1 ? (gapSinceLast - 1) + " day(s) went unlogged. " : "") +
-            "On " + inr(data.currentFund) + ", " + data.streakGoalDays + " consistent days at " + inr(data.dailyTarget) + "/day were worth ",
-          h("b", null, inr(potentialProfit)),
-          ". A missed day resets the streak count — remaining days needed is now ",
-          h("b", null, remainingDays),
-          ", not less."
-        ),
-        h(
-          "div",
-          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16, marginBottom: 16 } },
-          h("div", { style: { fontSize: 12, color: "#FFB3B3" } }, "Projected fund right now"),
-          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 34, fontWeight: 700, color: "#fff" } }, inr(projectedFund)),
-          h("div", { style: { fontSize: 12, color: "#FFB3B3", marginTop: 6 } }, "Streak reset to 0 · " + remainingDays + " days still needed")
-        ),
-        canLogNow
-          ? h(
-              "div",
-              { style: { display: "flex", gap: 8, marginBottom: 6 } },
-              h("input", {
-                type: "number",
-                value: logAmount,
-                onChange: function (e) { setLogAmount(e.target.value); },
-                placeholder: "log today's profit/loss",
-                style: Object.assign({}, inputStyle, { background: "rgba(0,0,0,0.4)", borderColor: "#FF7A7A", color: "#fff" }),
-              }),
-              h(
-                "button",
-                { onClick: onLog, style: Object.assign({}, primaryBtn, { background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) },
-                "🪔 Relight"
-              )
-            )
-          : h(
-              "div",
-              { style: { fontSize: 13, color: "#FFB3B3", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
-              h(Lock, { size: 14 }),
-              " Relighting opens at 10:00 PM"
-            ),
-        h("div", { style: { fontSize: 11, color: "#FF9B9B", marginTop: 6 } }, "Don't let ₹ sit idle again — log the day it happens.")
-      )
-    );
-  }
-
-  /* ================= main component ================= */
-  function FundStreakTracker() {
-    var s0 = useState(DEFAULT_STATE), data = s0[0], setData = s0[1];
-    var sl = useState(false), loaded = sl[0], setLoaded = sl[1];
-    var se = useState(false), editing = se[0], setEditing = se[1];
-    var sa = useState(""), logAmount = sa[0], setLogAmount = sa[1];
-    var sn = useState(new Date()), now = sn[0], setNow = sn[1];
-    var sp = useState(false), previewFestive = sp[0], setPreviewFestive = sp[1];
-    var sf = useState(false), showFunds = sf[0], setShowFunds = sf[1];
-    var sc = useState(false), showCalendar = sc[0], setShowCalendar = sc[1];
-    var petalHostRef = useRef(null);
-    var crackerHostRef = useRef(null);
-    var reducedMotion = useRef(
-      typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    );
-
-    useEffect(function () {
-      var cancelled = false;
-      storage.get(STORAGE_KEY).then(function (res) {
-        if (cancelled) return;
-        if (res && res.value) {
-          try { setData(Object.assign({}, DEFAULT_STATE, JSON.parse(res.value))); } catch (e) {}
-        }
-        setLoaded(true);
-      }).catch(function () { if (!cancelled) setLoaded(true); });
-      return function () { cancelled = true; };
-    }, []);
-
-    useEffect(function () {
-      var t = setInterval(function () { setNow(new Date()); }, 15000);
-      return function () { clearInterval(t); };
-    }, []);
-
-    var persist = useCallback(function (next) {
-      setData(next);
-      storage.set(STORAGE_KEY, JSON.stringify(next)).catch(function (e) { console.error("save failed", e); });
-    }, []);
-
-    var sortedLogs = data.logs.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-    var loggedFund = sortedLogs.reduce(function (s, l) { return s + Number(l.amount || 0); }, 0);
-
-    var currentStreak = 0;
-    if (sortedLogs.length) {
-      var gapToToday = daysBetween(sortedLogs[sortedLogs.length - 1].date, todayStr());
-      if (gapToToday <= 1) {
-        currentStreak = 1;
-        for (var i = sortedLogs.length - 1; i > 0; i--) {
-          if (daysBetween(sortedLogs[i - 1].date, sortedLogs[i].date) === 1) currentStreak++;
-          else break;
-        }
-      }
-    }
-
-    var lastLogDate = sortedLogs.length ? sortedLogs[sortedLogs.length - 1].date : null;
-    var gapSinceLast = lastLogDate ? daysBetween(lastLogDate, todayStr()) : 0;
-    var missedAtLeastOneDay = data.startDate && lastLogDate !== null && gapSinceLast >= 2;
-    var missedFromStartWithNoLog = data.startDate && lastLogDate === null && daysBetween(data.startDate, todayStr()) >= 1;
-    var isBroken = missedAtLeastOneDay || missedFromStartWithNoLog;
-
-    var todayLog = data.logs.find(function (l) { return l.date === todayStr(); });
-    var loggedToday = !!todayLog;
-
-    var lastLog = sortedLogs.length ? sortedLogs[sortedLogs.length - 1] : null;
-    var lastLogAt = lastLog ? new Date(lastLog.loggedAt || (lastLog.date + "T12:00:00")) : null;
-    var msSinceLastLog = lastLogAt ? now - lastLogAt : Infinity;
-    var within24h = msSinceLastLog < 24 * 60 * 60 * 1000;
-    var celebratingProfit = within24h && lastLog && Number(lastLog.amount) >= 0;
-    var celebratingLoss = within24h && lastLog && Number(lastLog.amount) < 0;
-    var hoursLeft = within24h ? Math.max(0, Math.ceil((24 * 60 * 60 * 1000 - msSinceLastLog) / (60 * 60 * 1000))) : 0;
-
-    var remainingDays = Math.max(data.streakGoalDays - currentStreak, 0);
-    var daysLoggedCount = data.logs.length;
-    var avgDailyProfit = daysLoggedCount > 0 ? loggedFund / daysLoggedCount : 0;
-    var effectiveDailyRate = avgDailyProfit > Number(data.dailyTarget || 0) ? avgDailyProfit : Number(data.dailyTarget || 0);
-    var projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * effectiveDailyRate;
-
-    var targetDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 1) : null;
-    var completionValue = 0;
-    if (data.startDate) {
-      for (var d = 0; d < data.streakGoalDays; d++) {
-        var dDate = addDays(data.startDate, d);
-        var log = data.logs.find(function (l) { return l.date === dDate; });
-        completionValue += log ? Number(log.amount) : Number(data.dailyTarget || 0);
-      }
-    } else {
-      completionValue = data.streakGoalDays * Number(data.dailyTarget || 0);
-    }
-
-    var unlockDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 2) : null;
-    var canEditConfig = !data.startDate || todayStr() >= unlockDate;
-    var canLogNow = data.logs.length === 0 || now.getHours() >= LOG_HOUR;
-
-    var mode = "green";
-    if (isBroken) mode = "broken";
-    else if (celebratingLoss) mode = "loss";
-
-    var showFestive = celebratingProfit || previewFestive;
-
-    /* auto-fill any missed days (including full backfill from a past start date) —
-       must wait for the real saved data to finish loading first, otherwise this
-       would run against DEFAULT_STATE and overwrite real saved progress in storage */
-    useEffect(function () {
-      if (!loaded) return;
-      var updated = ensureAutoLogs(data, now);
-      if (updated) persist(Object.assign({}, data, { logs: updated }));
-    }, [loaded, data, now]);
-
-    /* petal rain only during the 24h post-profit celebration window */
-    useEffect(function () {
-      if (!showFestive || reducedMotion.current) return;
-      var host = petalHostRef.current;
-      if (!host) return;
-      var petals = ["🌿", "🍃", "🌸"];
-      var alive = true;
-      function spawn() {
-        if (!alive) return;
-        var el = document.createElement("span");
-        el.textContent = petals[Math.floor(Math.random() * petals.length)];
-        el.style.position = "absolute";
-        el.style.left = Math.random() * 100 + "%";
-        el.style.top = "-40px";
-        el.style.fontSize = 14 + Math.random() * 16 + "px";
-        el.style.opacity = 0.55 + Math.random() * 0.35;
-        var dur = 7 + Math.random() * 6;
-        el.style.animation = "petal-fall " + dur + "s linear forwards";
-        host.appendChild(el);
-        setTimeout(function () { el.remove(); }, dur * 1000 + 100);
-      }
-      var interval = setInterval(spawn, 420);
-      return function () { alive = false; clearInterval(interval); };
-    }, [showFestive]);
-
-    /* ambient diwali bursts */
-    useEffect(function () {
-      if (mode !== "green" || !showFestive || reducedMotion.current) return;
-      var host = crackerHostRef.current;
-      if (!host) return;
-      var alive = true;
-      function burst() {
-        if (!alive) return;
-        var colors = ["#FFB627", "#FF6B35", "#FFD23F", "#FF3E7F", "#8CFFDA", "#FFF"];
-        var cx = 15 + Math.random() * 70;
-        var cy = 10 + Math.random() * 40;
-        for (var i = 0; i < 20; i++) {
-          var p = document.createElement("span");
-          var angle = (Math.PI * 2 * i) / 20;
-          var dist = 55 + Math.random() * 65;
-          p.style.position = "absolute";
-          p.style.left = cx + "%";
-          p.style.top = cy + "%";
-          p.style.width = p.style.height = 5 + Math.random() * 4 + "px";
-          p.style.borderRadius = "50%";
-          p.style.background = colors[Math.floor(Math.random() * colors.length)];
-          p.style.boxShadow = "0 0 8px " + colors[Math.floor(Math.random() * colors.length)];
-          p.style.setProperty("--dx", Math.cos(angle) * dist + "px");
-          p.style.setProperty("--dy", Math.sin(angle) * dist + "px");
-          p.style.animation = "cracker-burst 900ms ease-out forwards";
-          host.appendChild(p);
-          setTimeout(function () { p.remove(); }, 950);
-        }
-      }
-      burst();
-      var interval = setInterval(burst, 18000);
-      return function () { alive = false; clearInterval(interval); };
-    }, [mode, showFestive]);
-
-    /* ambient ash/ember during loss/broken punishment */
-    useEffect(function () {
-      if (mode === "green" || reducedMotion.current) return;
-      var host = petalHostRef.current;
-      if (!host) return;
-      var alive = true;
-      function spawn() {
-        if (!alive) return;
-        var el = document.createElement("span");
-        el.textContent = Math.random() > 0.5 ? "🔥" : "💀";
-        el.style.position = "absolute";
-        el.style.left = Math.random() * 100 + "%";
-        el.style.top = "-30px";
-        el.style.fontSize = 12 + Math.random() * 14 + "px";
-        el.style.opacity = 0.4 + Math.random() * 0.3;
-        var dur = 6 + Math.random() * 5;
-        el.style.animation = "petal-fall " + dur + "s linear forwards";
-        host.appendChild(el);
-        setTimeout(function () { el.remove(); }, dur * 1000 + 100);
-      }
-      var interval = setInterval(spawn, 500);
-      return function () { alive = false; clearInterval(interval); };
-    }, [mode]);
-
-    function handleLog() {
-      if (!canLogNow || loggedToday) return;
-      var amt = Number(logAmount);
-      if (!amt && amt !== 0) return;
-      var next = Object.assign({}, data, {
-        logs: data.logs.filter(function (l) { return l.date !== todayStr(); }).concat([
-          { date: todayStr(), amount: amt, loggedAt: new Date().toISOString() },
-        ]),
-      });
-      persist(next);
-      setLogAmount("");
-    }
-
-    function startChallenge(cfg) {
-      persist(Object.assign({}, data, cfg, { startDate: cfg.startDate || todayStr(), logs: [] }));
-      setEditing(false);
-    }
-
-    function saveConfig(cfg) {
-      persist(Object.assign({}, data, cfg));
-      setEditing(false);
-    }
-
-    /* ---------- money-ops: vault, deposits, withdrawals ---------- */
-    var vaultBalance = 0;
-    data.logs.forEach(function (l) {
-      var amt = Number(l.amount || 0);
-      if (amt > VAULT_THRESHOLD) vaultBalance += amt - VAULT_THRESHOLD;
-    });
-    var totalDeposited = data.deposits.reduce(function (s, d) { return s + Number(d.amount || 0); }, 0);
-    var totalWithdrawn = data.withdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
-    // Current funds is the fixed capital plus deposit/withdrawal activity ONLY — daily profit never touches it.
-    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited - totalWithdrawn;
-    // Total profit is simply the sum of every logged day, unmodified.
-    var totalProfitLogged = loggedFund;
-    // Estimate: current funds plus the full 100-day completion estimate (completionValue computed above).
-    var estimate100 = currentFundsOps + completionValue;
-    var vaultReviewCount = data.withdrawals.length % 15;
-
-    // Everything through RECONCILE_CUTOFF is treated as already withdrawn (matched 1:1 above).
-    // Only profit logged AFTER that date, minus any withdrawals made after that date, is "fresh" and available.
-    var freshProfit = data.logs.reduce(function (s, l) { return l.date >= FRESH_START ? s + Number(l.amount || 0) : s; }, 0);
-    var freshWithdrawn = data.withdrawals.reduce(function (s, w) { return w.date >= FRESH_START ? s + Number(w.amount || 0) : s; }, 0);
-    var availableToWithdraw = Math.max(0, freshProfit - freshWithdrawn);
-
-    function nowParts() {
-      var d = new Date();
-      var h = d.getHours(), m = d.getMinutes();
-      var ampm = h >= 12 ? "pm" : "am";
-      var h12 = h % 12; if (h12 === 0) h12 = 12;
-      return { date: todayStr(), time: h12 + ":" + pad(m) + " " + ampm };
-    }
-
-    function addDeposit(amount, passcode) {
-      if (passcode !== DEPOSIT_PASSCODE) return "Wrong passcode.";
-      var amt = Number(amount);
-      if (!amt || amt <= 0) return "Enter a valid amount.";
-      var np = nowParts();
-      persist(Object.assign({}, data, {
-        deposits: data.deposits.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS" }]),
-      }));
-      return null;
-    }
-
-    function addWithdrawal(amount, passcode) {
-      if (!data.withdrawalAccount) return "Set a withdrawal account first.";
-      if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";
-      var amt = Number(amount);
-      if (!amt || amt <= 0) return "Enter a valid amount.";
-      if (amt > currentFundsOps) return "That's more than your current funds.";
-      var np = nowParts();
-      persist(Object.assign({}, data, {
-        withdrawals: data.withdrawals.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS" }]),
-      }));
-      return null;
-    }
-
-    function saveWithdrawalAccount(method, details, passcode) {
-      if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";
-      if (!method) return "Choose a method.";
-      persist(Object.assign({}, data, { withdrawalAccount: { method: method, details: details || "" } }));
-      return null;
-    }
-
-    if (!loaded) return null;
-
-    var body;
-    if (!data.startDate && !editing) {
-      body = h(SetupView, { data: data, onStart: startChallenge });
-    } else if (mode === "broken") {
-      body = h(RedRegretView, {
-        data: data, remainingDays: remainingDays, projectedFund: projectedFund, gapSinceLast: gapSinceLast,
-        logAmount: logAmount, setLogAmount: setLogAmount, canLogNow: canLogNow, onLog: handleLog, petalHostRef: petalHostRef,
-      });
-    } else if (mode === "loss") {
-      body = h(LossPunishView, {
-        data: data, lastLog: lastLog, hoursLeft: hoursLeft, projectedFund: projectedFund,
-        remainingDays: remainingDays, petalHostRef: petalHostRef,
-      });
-    } else if (showFunds) {
-      body = h(FundsView, {
-        data: data, currentFundsOps: currentFundsOps, totalProfitLogged: totalProfitLogged, estimate100: estimate100,
-        availableToWithdraw: availableToWithdraw,
-        vaultBalance: vaultBalance, vaultReviewCount: vaultReviewCount, onBack: function () { setShowFunds(false); },
-        addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,
-      });
-    } else if (showCalendar) {
-      body = h(CalendarView, { data: data, targetDate: targetDate, onBack: function () { setShowCalendar(false); } });
-    } else {
-      body = h(GreenView, {
-        data: data, currentStreak: currentStreak, remainingDays: remainingDays, loggedFund: loggedFund,
-        projectedFund: projectedFund, completionValue: completionValue, targetDate: targetDate, loggedToday: loggedToday,
-        showFestive: showFestive, hoursLeft: hoursLeft, previewFestive: previewFestive, setPreviewFestive: setPreviewFestive,
-        canLogNow: canLogNow, logAmount: logAmount, setLogAmount: setLogAmount, onLog: handleLog, editing: editing,
-        setEditing: setEditing, canEditConfig: canEditConfig, unlockDate: unlockDate, saveConfig: saveConfig,
-        petalHostRef: petalHostRef, crackerHostRef: crackerHostRef, onOpenFunds: function () { setShowFunds(true); },
-        onOpenCalendar: function () { setShowCalendar(true); },
-      });
-    }
-
-    return h("div", { style: { fontFamily: "'Inter', sans-serif", minHeight: "100vh" } }, body);
-  }
-
-  try {
-    var root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(h(FundStreakTracker));
-  } catch (e) {
-    document.getElementById("root").innerHTML =
-      '<div style="color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:20px;white-space:pre-wrap;">Render failed: ' +
-      (e && e.message ? e.message : String(e)) + '</div>';
-  }
-})();
-</script>
-</body>
+<!DOCTYPE html>  <html lang="en">  
+<head>  
+<meta charset="UTF-8" />  
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />  
+<title>Consistency Fund</title>  
+<style>  
+  html, body, #root { margin: 0; padding: 0; min-height: 100vh; background: #062017; }  
+  * { box-sizing: border-box; }  
+</style>  
+</head>  
+<body>  
+<div id="root">  
+  <div style="color:#7FE0AA;font-family:sans-serif;padding:40px 20px;text-align:center;">  
+    Loading… if this never changes, JavaScript didn't run — see note below.  
+  </div>  
+</div>  
+<div id="err-box" style="display:none;color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:12px;white-space:pre-wrap;"></div>  <script>  
+  window.addEventListener("error", function (e) {  
+    var box = document.getElementById("err-box");  
+    box.style.display = "block";  
+    box.textContent += "Error: " + e.message + " (" + (e.filename || "?") + ":" + (e.lineno || "?") + ")\n";  
+  });  
+</script>  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load React from cdnjs.cloudflare.com — this network/browser may be blocking that CDN.\n';"></script>  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" onerror="document.getElementById('err-box').style.display='block';document.getElementById('err-box').textContent+='Failed to load ReactDOM from cdnjs.cloudflare.com.\n';"></script>  <script>  
+(function () {  
+  var h = React.createElement;  
+  var useState = React.useState, useEffect = React.useEffect, useRef = React.useRef, useCallback = React.useCallback;  
+  
+  /* ---------- tiny emoji-based icon components ---------- */  
+  function makeIcon(glyph) {  
+    return function (props) {  
+      var size = (props && props.size) || 16;  
+      return h("span", { style: { fontSize: size, lineHeight: 1, display: "inline-block" } }, glyph);  
+    };  
+  }  
+  var Flame = makeIcon("🔥");  
+  var Wallet = makeIcon("👛");  
+  var CalendarDays = makeIcon("📅");  
+  var IndianRupee = makeIcon("₹");  
+  var Lock = makeIcon("🔒");  
+  var Unlock = makeIcon("🔓");  
+  var Target = makeIcon("🎯");  
+  
+  /* ---------- storage shim (localStorage instead of Claude's window.storage) ---------- */  
+  var storage = {  
+    get: function (key) {  
+      var v = localStorage.getItem(key);  
+      return Promise.resolve(v !== null ? { key: key, value: v } : null);  
+    },  
+    set: function (key, value) {  
+      localStorage.setItem(key, value);  
+      return Promise.resolve({ key: key, value: value });  
+    },  
+  };  
+  
+  /* ---------- helpers ---------- */  
+  function pad(n) { return String(n).padStart(2, "0"); }  
+  function todayStr() {  
+    var d = new Date();  
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());  
+  }  
+  function addDays(dateStr, n) {  
+    var d = new Date(dateStr + "T00:00:00");  
+    d.setDate(d.getDate() + n);  
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());  
+  }  
+  function daysBetween(a, b) {  
+    return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);  
+  }  
+  function fmtDate(s) {  
+    return s ? new Date(s + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";  
+  }  
+  function inr(n) {  
+    return (n < 0 ? "-₹" : "₹") + Math.round(Math.abs(n)).toLocaleString("en-IN", { maximumFractionDigits: 0 });  
+  }  
+  
+  /* ---------- deterministic daily-profit generator ----------  
+     Same date always produces the same number (stable across reloads,  
+     effectively a precomputed table without hand-typing 100 values).  
+     Range 2312–4123. Weekdays skew toward the low band (2312–3200) most  
+     of the time, occasionally the high band (3500–4123). Weekends are  
+     always kept in the low band. */  
+  function seededRandom(seedStr) {  
+    var h = 0;  
+    for (var i = 0; i < seedStr.length; i++) { h = (h * 31 + seedStr.charCodeAt(i)) >>> 0; }  
+    return (h % 100000) / 100000;  
+  }  
+  var LOW_MIN = 2312, LOW_MAX = 3200, HIGH_MIN = 3500, HIGH_MAX = 4123;  
+  function generateDailyProfit(dateStr) {  
+    var day = new Date(dateStr + "T00:00:00").getDay(); // 0 = Sun, 6 = Sat  
+    var isWeekend = day === 0 || day === 6;  
+    var rLow = seededRandom(dateStr + "-lo");  
+    if (isWeekend) return Math.round(LOW_MIN + rLow * (LOW_MAX - LOW_MIN));  
+    var pickHigh = seededRandom(dateStr + "-pick") > 0.75; // ~25% of weekdays land in the high band  
+    return pickHigh  
+      ? Math.round(HIGH_MIN + rLow * (HIGH_MAX - HIGH_MIN))  
+      : Math.round(LOW_MIN + rLow * (LOW_MAX - LOW_MIN));  
+  }  
+  /* fills in any day between startDate and "now" (inclusive of today only after 10pm)  
+     that doesn't already have a log; returns a new logs array, or null if nothing to add */  
+  function ensureAutoLogs(data, now) {  
+    if (!data.startDate) return null;  
+    var includeToday = now.getHours() >= LOG_HOUR;  
+    var lastNeeded = includeToday ? todayStr() : addDays(todayStr(), -1);  
+    if (data.startDate > lastNeeded) return null;  
+    var existing = {};  
+    data.logs.forEach(function (l) { existing[l.date] = true; });  
+    var additions = [];  
+    var cursor = data.startDate;  
+    var guard = 0;  
+    while (cursor <= lastNeeded && guard < 2000) {  
+      if (!existing[cursor]) {  
+        additions.push({ date: cursor, amount: generateDailyProfit(cursor), loggedAt: cursor + "T16:30:00.000Z", auto: true });  
+      }  
+      cursor = addDays(cursor, 1);  
+      guard++;  
+    }  
+    return additions.length ? data.logs.concat(additions) : null;  
+  }  
+  
+  var STORAGE_KEY = "fund-streak:data";  
+  var LOG_HOUR = 22; // 10 PM  
+  var FIXED_DAILY_TARGET = 3000; // not user-editable  
+  var FIXED_CAPITAL = 35000;  
+  
+  /* ---------- withdrawal amounts derived from the daily-profit generator ----------  
+     Each withdrawal's amount is the sum of every day's generated profit from the  
+     PREVIOUS withdrawal's date (or the streak's start date, for the first  
+     withdrawal) up to the day BEFORE the withdrawal's own date. That block of  
+     days is then "swept" into the withdrawal amount, and the next period starts  
+     fresh from the withdrawal's own date. Dates/times/status are fixed; only the  
+     amount is computed. */  
+  var WITHDRAWAL_TEMPLATE = [  
+    { date: "2026-07-25", time: "08:15 am", status: "SUCCESS" },  
+    { date: "2026-07-28", time: "12:23 pm", status: "SUCCESS" },  
+    { date: "2026-08-02", time: "09:12 am", status: "SUCCESS" },  
+    { date: "2026-08-07", time: "04:54 pm", status: "SUCCESS" },  
+    { date: "2026-08-12", time: "09:23 am", status: "SUCCESS" },  
+    { date: "2026-08-16", time: "01:14 pm", status: "SUCCESS" },  
+    { date: "2026-08-24", time: "04:32 am", status: "SUCCESS" },  
+    { date: "2026-08-28", time: "06:30 pm", status: "SUCCESS" },  
+  ];  
+  function sumGeneratedProfitRange(startD, endD) {  
+    // inclusive on both ends  
+    if (!startD || !endD || startD > endD) return 0;  
+    var sum = 0;  
+    var cursor = startD;  
+    var guard = 0;  
+    while (cursor <= endD && guard < 3000) {  
+      sum += generateDailyProfit(cursor);  
+      cursor = addDays(cursor, 1);  
+      guard++;  
+    }  
+    return sum;  
+  }  
+  function buildWithdrawalsFromTemplate(template, startDate) {  
+    var sorted = template.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });  
+    var result = [];  
+    var periodStart = startDate;  
+    for (var i = 0; i < sorted.length; i++) {  
+      var w = sorted[i];  
+      var periodEnd = addDays(w.date, -1);  
+      var amount = sumGeneratedProfitRange(periodStart, periodEnd);  
+      result.push({ date: w.date, time: w.time, amount: amount, status: w.status, type: "profit" });  
+      periodStart = w.date; // next period picks up from this withdrawal's own date  
+    }  
+    return result;  
+  }  
+  
+  /* ---------- cash withdrawals ----------  
+     These pull from the deposited capital itself (capital + deposits), not from  
+     swept daily profit, so they're tracked and totalled completely separately  
+     from the profit withdrawals above. */  
+  var CASH_WITHDRAWAL_TEMPLATE = [  
+    { date: "2026-08-05", time: "03:13 pm", amount: 30000, status: "SUCCESS", type: "cash" },  
+    { date: "2026-08-16", time: "09:11 pm", amount: 30000, status: "SUCCESS", type: "cash" },  
+  ];  
+  
+  var DEFAULT_STATE = {  
+    currentFund: FIXED_CAPITAL,  
+    dailyTarget: FIXED_DAILY_TARGET,  
+    streakGoalDays: 100,  
+    startDate: "2026-07-24",  
+    logs: [],  
+    withdrawalAccount: null, // { method: 'upi'|'bank'|'usdt'|'tron', details: string }  
+    deposits: [  
+      { date: "2026-07-24", time: "10:43 am", amount: 30000, status: "SUCCESS" },  
+      { date: "2026-08-06", time: "02:19 pm", amount: 30000, status: "SUCCESS" },  
+      { date: "2026-08-20", time: "07:00 pm", amount: 12000, status: "SUCCESS" },  
+    ],  
+    withdrawals: buildWithdrawalsFromTemplate(WITHDRAWAL_TEMPLATE, "2026-07-24").concat(CASH_WITHDRAWAL_TEMPLATE),  
+  };  
+  
+  
+  var DEPOSIT_PASSCODE = "Krishna";  
+  var WITHDRAW_PASSCODE = "Radha";  
+  /* ---------- app-level pattern lock ----------  
+     Dots are numbered like a phone keypad:  
+       1 2 3  
+       4 5 6  
+       7 8 9  
+     Change PATTERN_LOCK_SEQUENCE below to set your own unlock pattern  
+     (any length 4-9, no repeated dots). This gates the whole page — the  
+     dashboard, calendar, and funds screens don't render until it's drawn  
+     correctly. It resets on every page load (not remembered in storage). */  
+  var PATTERN_LOCK_SEQUENCE = [1, 2, 3, 5, 7, 8, 9];  
+  var VAULT_THRESHOLD = 5000; // profit above this per day goes to the surplus vault  
+  var WITHDRAWAL_METHODS = [  
+    { id: "upi", label: "UPI", icon: "📱" },  
+    { id: "bank", label: "Bank Account", icon: "🏦" },  
+    { id: "usdt", label: "USDT (TRC20)", icon: "₮" },  
+    { id: "tron", label: "TRON", icon: "🔺" },  
+  ];  
+  
+  /* ---------- shared styles ---------- */  
+  function pageWrap(mode) {  
+    return {  
+      position: "relative",  
+      minHeight: "100vh",  
+      overflow: "hidden",  
+      background:  
+        mode === "green"  
+          ? "radial-gradient(circle at 50% -10%, #175C42 0%, #0B3D2E 45%, #062017 100%)"  
+          : "radial-gradient(circle at 50% 0%, #6B0000 0%, #3D0000 55%, #1A0000 100%)",  
+      color: mode === "green" ? "#EAF7EF" : "#FFE3E3",  
+      padding: "32px 16px 60px",  
+      animation: mode === "red" ? "red-pulse 2.6s ease-in-out infinite" : "none",  
+      fontFamily: "'Inter', sans-serif",  
+    };  
+  }  
+  var heroBox = {  
+    background: "linear-gradient(160deg, rgba(57,255,136,0.10), rgba(57,255,136,0.02))",  
+    border: "1px solid rgba(127,224,170,0.25)",  
+    borderRadius: 20,  
+    padding: "22px 20px",  
+    textAlign: "center",  
+    marginBottom: 16,  
+  };  
+  var inputStyle = {  
+    flex: 1,  
+    padding: "10px 12px",  
+    borderRadius: 10,  
+    border: "1px solid rgba(127,224,170,0.3)",  
+    background: "rgba(6,32,23,0.5)",  
+    color: "#EAF7EF",  
+    fontSize: 14,  
+    outline: "none",  
+  };  
+  var primaryBtn = {  
+    display: "flex",  
+    alignItems: "center",  
+    gap: 6,  
+    padding: "10px 16px",  
+    borderRadius: 10,  
+    border: "none",  
+    background: "linear-gradient(135deg,#39FF88,#0FA968)",  
+    color: "#062017",  
+    fontWeight: 700,  
+    fontSize: 14,  
+    cursor: "pointer",  
+  };  
+  var fairyRow = { position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-around", padding: "14px 10px", zIndex: 20 };  
+  
+  var GLOBAL_CSS_TEXT =  
+    "@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&family=Inter:wght@400;500;600&display=swap');\n" +  
+    "@keyframes petal-fall { 0% { transform: translateY(0) rotate(0deg); } 100% { transform: translateY(100vh) rotate(180deg); } }\n" +  
+    "@keyframes cracker-burst { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; } }\n" +  
+    "@keyframes twinkle { from { opacity: 0.35; transform: scale(0.85); } to { opacity: 1; transform: scale(1.15); } }\n" +  
+    "@keyframes diya-flicker { 0%,100% { filter: drop-shadow(0 0 6px #FFB627); transform: scale(1); } 50% { filter: drop-shadow(0 0 14px #FF6B35); transform: scale(1.08); } }\n" +  
+    "@keyframes red-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.15); } }\n" +  
+    "@keyframes reveal-pop { 0% { opacity: 0; transform: scale(0.75) translateY(10px); } 60% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: scale(1) translateY(0); } }\n" +  
+    "@keyframes sweep { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }\n" +  
+    "@keyframes lock-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-10px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-6px); } 80% { transform: translateX(6px); } }\n" +  
+    "@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }\n";  
+  
+  // inject global CSS once, up front (plain <style>, no React needed for this)  
+  var styleTag = document.createElement("style");  
+  styleTag.textContent = GLOBAL_CSS_TEXT;  
+  document.head.appendChild(styleTag);  
+  
+  /* ================= PATTERN LOCK (gates the whole page) ================= */  
+  var LOCK_DOTS = [  
+    { id: 1, cx: 60, cy: 60 }, { id: 2, cx: 150, cy: 60 }, { id: 3, cx: 240, cy: 60 },  
+    { id: 4, cx: 60, cy: 150 }, { id: 5, cx: 150, cy: 150 }, { id: 6, cx: 240, cy: 150 },  
+    { id: 7, cx: 60, cy: 240 }, { id: 8, cx: 150, cy: 240 }, { id: 9, cx: 240, cy: 240 },  
+  ];  
+  function dotById(id) { return LOCK_DOTS.find(function (d) { return d.id === id; }); }  
+  
+  function PatternLockView(props) {  
+    var onUnlock = props.onUnlock;  
+    var s1 = useState([]), path = s1[0], setPath = s1[1];  
+    var s2 = useState(false), dragging = s2[0], setDragging = s2[1];  
+    var s3 = useState(null), cursorPt = s3[0], setCursorPt = s3[1];  
+    var s4 = useState(false), showError = s4[0], setShowError = s4[1];  
+    var svgRef = useRef(null);  
+    var pathRef = useRef([]);  
+    pathRef.current = path;  
+  
+    function svgPoint(evt) {  
+      var svg = svgRef.current;  
+      if (!svg) return null;  
+      var rect = svg.getBoundingClientRect();  
+      var x = ((evt.clientX - rect.left) / rect.width) * 300;  
+      var y = ((evt.clientY - rect.top) / rect.height) * 300;  
+      return { x: x, y: y };  
+    }  
+  
+    function startAt(dotId, evt) {  
+      if (evt && evt.preventDefault) evt.preventDefault();  
+      setShowError(false);  
+      setDragging(true);  
+      setPath([dotId]);  
+    }  
+  
+    function enterDot(dotId) {  
+      if (!dragging) return;  
+      if (pathRef.current.indexOf(dotId) === -1) {  
+        setPath(pathRef.current.concat(dotId));  
+      }  
+    }  
+  
+    function finish() {  
+      if (!dragging) return;  
+      setDragging(false);  
+      var entered = pathRef.current;  
+      var ok = entered.length === PATTERN_LOCK_SEQUENCE.length &&  
+        entered.every(function (id, i) { return id === PATTERN_LOCK_SEQUENCE[i]; });  
+      if (ok) {  
+        onUnlock();  
+      } else if (entered.length > 0) {  
+        setShowError(true);  
+        setTimeout(function () { setPath([]); setShowError(false); }, 550);  
+      } else {  
+        setPath([]);  
+      }  
+    }  
+  
+    useEffect(function () {  
+      function onMove(evt) {  
+        if (!dragging) return;  
+        var pt = svgPoint(evt.touches ? evt.touches[0] : evt);  
+        if (pt) setCursorPt(pt);  
+        var clientPt = evt.touches ? evt.touches[0] : evt;  
+        var el = document.elementFromPoint(clientPt.clientX, clientPt.clientY);  
+        if (el && el.getAttribute) {  
+          var dotAttr = el.getAttribute("data-dot");  
+          if (dotAttr) enterDot(Number(dotAttr));  
+        }  
+      }  
+      function onUp() { finish(); }  
+      window.addEventListener("pointermove", onMove);  
+      window.addEventListener("pointerup", onUp);  
+      window.addEventListener("touchmove", onMove, { passive: false });  
+      window.addEventListener("touchend", onUp);  
+      return function () {  
+        window.removeEventListener("pointermove", onMove);  
+        window.removeEventListener("pointerup", onUp);  
+        window.removeEventListener("touchmove", onMove);  
+        window.removeEventListener("touchend", onUp);  
+      };  
+    }, [dragging]);  
+  
+    var lineColor = showError ? "#FF6B6B" : "#39FF88";  
+    var dotColor = showError ? "#FF6B6B" : "#39FF88";  
+  
+    var lines = [];  
+    for (var i = 0; i < path.length - 1; i++) {  
+      var a = dotById(path[i]), b = dotById(path[i + 1]);  
+      lines.push(h("line", { key: "l" + i, x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy, stroke: lineColor, strokeWidth: 6, strokeLinecap: "round" }));  
+    }  
+    if (dragging && path.length && cursorPt) {  
+      var last = dotById(path[path.length - 1]);  
+      lines.push(h("line", { key: "l-live", x1: last.cx, y1: last.cy, x2: cursorPt.x, y2: cursorPt.y, stroke: lineColor, strokeWidth: 6, strokeLinecap: "round", opacity: 0.6 }));  
+    }  
+  
+    return h(  
+      "div",  
+      { style: pageWrap("green") },  
+      h(  
+        "div",  
+        {  
+          style: {  
+            position: "relative", maxWidth: 360, margin: "70px auto", textAlign: "center",  
+            animation: showError ? "lock-shake 500ms ease" : "none",  
+          },  
+        },  
+        h("div", { style: { fontSize: 40, marginBottom: 6 } }, "🔒"),  
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 22, color: "#EFFFF4", margin: "0 0 4px" } }, "Draw your pattern"),  
+        h(  
+          "p",  
+          { style: { fontSize: 13, color: showError ? "#FFB3B3" : "#9FE8BC", marginBottom: 18 } },  
+          showError ? "Wrong pattern — try again." : "Unlock to view the fund."  
+        ),  
+        h(  
+          "svg",  
+          {  
+            ref: svgRef, viewBox: "0 0 300 300", width: "100%", style: { maxWidth: 300, touchAction: "none", userSelect: "none" },  
+            onPointerUp: finish,  
+          },  
+          lines,  
+          LOCK_DOTS.map(function (d) {  
+            var active = path.indexOf(d.id) !== -1;  
+            return h(  
+              "g",  
+              { key: d.id },  
+              h("circle", {  
+                cx: d.cx, cy: d.cy, r: 26, fill: "transparent", "data-dot": d.id,  
+                onPointerDown: function (e) { startAt(d.id, e); },  
+                onPointerEnter: function () { enterDot(d.id); },  
+                style: { cursor: "pointer" },  
+              }),  
+              h("circle", {  
+                cx: d.cx, cy: d.cy, r: active ? 14 : 10, fill: active ? dotColor : "rgba(127,224,170,0.25)",  
+                stroke: "rgba(127,224,170,0.5)", strokeWidth: active ? 0 : 1.5,  
+                style: { transition: "r 120ms ease, fill 120ms ease", pointerEvents: "none" },  
+              })  
+            );  
+          })  
+        )  
+      )  
+    );  
+  }  
+  
+  /* ================= ALGO ENGINE STATUS (always-on, independent of streak) ================= */  
+  var ALGO_TICKER_MESSAGES = [  
+    "Scanning BTC options chain for skew anomalies…",  
+    "Evaluating IV surface across near-dated expiries…",  
+    "Signal confirmed — sizing position within risk band…",  
+    "Routing order via low-latency execution node…",  
+    "Monitoring open gamma exposure…",  
+    "Rebalancing delta hedge…",  
+    "No arbitrage detected — holding…",  
+    "Order filled — updating book…",  
+    "Re-checking funding & open interest…",  
+    "Volatility regime: stable — continuing strategy…",  
+  ];  
+  
+  function AlgoEngineStatus(props) {  
+    var startDate = props.startDate;  
+    var s1 = useState(new Date()), tick = s1[0], setTick = s1[1];  
+    var s2 = useState(null), btcPrice = s2[0], setBtcPrice = s2[1];  
+    var s3 = useState(null), btcChange = s3[0], setBtcChange = s3[1];  
+    var s4 = useState(0), tickerIdx = s4[0], setTickerIdx = s4[1];  
+    var s5 = useState(38), latency = s5[0], setLatency = s5[1];  
+  
+    useEffect(function () {  
+      var t = setInterval(function () { setTick(new Date()); }, 1000);  
+      return function () { clearInterval(t); };  
+    }, []);  
+  
+    useEffect(function () {  
+      var t = setInterval(function () {  
+        setTickerIdx(function (i) { return (i + 1) % ALGO_TICKER_MESSAGES.length; });  
+        setLatency(28 + Math.floor(Math.random() * 34));  
+      }, 3200);  
+      return function () { clearInterval(t); };  
+    }, []);  
+  
+    useEffect(function () {  
+      var cancelled = false;  
+      function fetchPrice() {  
+        fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true")  
+          .then(function (r) { return r.json(); })  
+          .then(function (d) {  
+            if (cancelled) return;  
+            if (d && d.bitcoin) {  
+              setBtcPrice(d.bitcoin.usd);  
+              setBtcChange(d.bitcoin.usd_24h_change);  
+            }  
+          })  
+          .catch(function () {});  
+      }  
+      fetchPrice();  
+      var t = setInterval(fetchPrice, 30000);  
+      return function () { cancelled = true; clearInterval(t); };  
+    }, []);  
+  
+    var uptimeStr = "—";  
+    if (startDate) {  
+      var start = new Date(startDate + "T00:00:00");  
+      var diffMs = tick - start;  
+      if (diffMs > 0) {  
+        var totalSec = Math.floor(diffMs / 1000);  
+        var days = Math.floor(totalSec / 86400);  
+        var hours = Math.floor((totalSec % 86400) / 3600);  
+        var mins = Math.floor((totalSec % 3600) / 60);  
+        var secs = totalSec % 60;  
+        uptimeStr = days + "d " + hours + "h " + pad(mins) + "m " + pad(secs) + "s";  
+      }  
+    }  
+  
+    return h(  
+      "div",  
+      {  
+        style: {  
+          background: "linear-gradient(160deg, rgba(57,255,136,0.10), rgba(6,32,23,0.4))",  
+          border: "1px solid rgba(57,255,136,0.25)", borderRadius: 16, padding: "14px 16px", marginBottom: 16,  
+        },  
+      },  
+      h(  
+        "div",  
+        { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 } },  
+        h(  
+          "div",  
+          { style: { display: "flex", alignItems: "center", gap: 6 } },  
+          h("span", {  
+            style: {  
+              width: 8, height: 8, borderRadius: "50%", background: "#39FF88", boxShadow: "0 0 8px #39FF88",  
+              animation: "twinkle 1.2s ease-in-out infinite alternate", display: "inline-block",  
+            },  
+          }),  
+          h("span", { style: { fontSize: 11, color: "#39FF88", fontWeight: 700, letterSpacing: 1 } }, "ALGO ENGINE — LIVE")  
+        ),  
+        h(  
+          "span",  
+          { style: { fontSize: 10, color: "#FFD23F", background: "rgba(255,210,63,0.12)", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 20, padding: "2px 8px" } },  
+          "⚡ PREMIUM 24/7 EXECUTION"  
+        )  
+      ),  
+      h(  
+        "div",  
+        { style: { fontSize: 12, color: "#B9F3CE", marginBottom: 10, minHeight: 16, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" } },  
+        "› " + ALGO_TICKER_MESSAGES[tickerIdx]  
+      ),  
+      h(  
+        "div",  
+        { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 } },  
+        h(  
+          "div",  
+          null,  
+          h("div", { style: { color: "#7FE0AA" } }, "BTC/USD"),  
+          h(  
+            "div",  
+            { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 700, color: "#EFFFF4" } },  
+            btcPrice ? "$" + Math.round(btcPrice).toLocaleString("en-US") : "loading…"  
+          ),  
+          btcChange != null  
+            ? h(  
+                "div",  
+                { style: { color: btcChange >= 0 ? "#39FF88" : "#FF6B6B", fontSize: 10 } },  
+                (btcChange >= 0 ? "▲ " : "▼ ") + Math.abs(btcChange).toFixed(2) + "% (24h)"  
+              )  
+            : null  
+        ),  
+        h(  
+          "div",  
+          null,  
+          h("div", { style: { color: "#7FE0AA" } }, "Engine uptime"),  
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 700, color: "#EFFFF4" } }, uptimeStr),  
+          h("div", { style: { color: "#7FE0AA", fontSize: 10 } }, "Node ap-south-1 · " + latency + "ms")  
+        )  
+      )  
+    );  
+  }  
+  
+  /* ================= BOOT SEQUENCE (plays once, right after the pattern unlocks) ================= */  
+  var BOOT_LINES = [  
+    "Initializing secure session…",  
+    "Establishing encrypted channel… OK",  
+    "Verifying node authentication… OK",  
+    "Mounting fund ledger…",  
+    "Syncing algo engine handshake…",  
+    "Access granted.",  
+  ];  
+  
+  function BootSequenceView(props) {  
+    var onDone = props.onDone;  
+    var s1 = useState(0), revealed = s1[0], setRevealed = s1[1];  
+  
+    useEffect(function () {  
+      var i = 0;  
+      var interval = setInterval(function () {  
+        i++;  
+        setRevealed(i);  
+        if (i >= BOOT_LINES.length) {  
+          clearInterval(interval);  
+          setTimeout(onDone, 550);  
+        }  
+      }, 340);  
+      return function () { clearInterval(interval); };  
+    }, []);  
+  
+    var pct = Math.round((revealed / BOOT_LINES.length) * 100);  
+  
+    return h(  
+      "div",  
+      { style: pageWrap("green") },  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 380, margin: "110px auto", textAlign: "left" } },  
+        h(  
+          "div",  
+          { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 14, justifyContent: "center" } },  
+          h("span", { style: { fontSize: 22 } }, "🪔"),  
+          h("span", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 18, color: "#EFFFF4" } }, "Consistency Fund")  
+        ),  
+        h(  
+          "div",  
+          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(57,255,136,0.25)", borderRadius: 12, padding: "14px 16px", fontFamily: "monospace", fontSize: 12, color: "#7FE0AA", minHeight: 150 } },  
+          BOOT_LINES.slice(0, revealed).map(function (line, i) {  
+            return h("div", { key: i, style: { marginBottom: 6, color: i === revealed - 1 && line === "Access granted." ? "#39FF88" : "#7FE0AA", fontWeight: line === "Access granted." ? 700 : 400 } }, "$ " + line);  
+          })  
+        ),  
+        h(  
+          "div",  
+          { style: { marginTop: 14, height: 6, borderRadius: 4, background: "rgba(127,224,170,0.15)", overflow: "hidden" } },  
+          h("div", { style: { width: pct + "%", height: "100%", background: "linear-gradient(90deg,#39FF88,#0FA968)", transition: "width 300ms ease" } })  
+        )  
+      )  
+    );  
+  }  
+  
+  /* ================= INFRA & SECURITY PANEL (server rack + security ticker, no trade/market data) ================= */  
+  var SECURITY_TICKER_MESSAGES = [  
+    "🔐 TLS 1.3 · AES-256-GCM channel active",  
+    "Session token rotated",  
+    "Node authentication verified ✅",  
+    "Kill-switch: armed",  
+    "Firewall: 0 intrusions detected",  
+    "Backup node: standby, ready to fail over",  
+    "Ledger checksum verified",  
+    "Heartbeat received from execution core",  
+  ];  
+  
+  function InfraSecurityPanel() {  
+    var s1 = useState(0), tickerIdx = s1[0], setTickerIdx = s1[1];  
+    var s2 = useState(function () {  
+      var arr = [];  
+      for (var i = 0; i < 24; i++) arr.push(Math.random() > 0.14 ? "#39FF88" : "#FFD23F");  
+      return arr;  
+    }), ledColors = s2[0], setLedColors = s2[1];  
+  
+    useEffect(function () {  
+      var t = setInterval(function () {  
+        setTickerIdx(function (i) { return (i + 1) % SECURITY_TICKER_MESSAGES.length; });  
+        setLedColors(function (prev) {  
+          var next = prev.slice();  
+          var flips = 2 + Math.floor(Math.random() * 3);  
+          for (var k = 0; k < flips; k++) {  
+            var idx = Math.floor(Math.random() * next.length);  
+            next[idx] = Math.random() > 0.14 ? "#39FF88" : "#FFD23F";  
+          }  
+          return next;  
+        });  
+      }, 2600);  
+      return function () { clearInterval(t); };  
+    }, []);  
+  
+    return h(  
+      "div",  
+      {  
+        style: {  
+          background: "linear-gradient(160deg, rgba(127,224,170,0.06), rgba(6,32,23,0.4))",  
+          border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: "14px 16px", marginBottom: 16,  
+        },  
+      },  
+      h(  
+        "div",  
+        { style: { fontSize: 11, color: "#7FE0AA", fontWeight: 700, letterSpacing: 1, marginBottom: 10 } },  
+        "🖥️ INFRA & SECURITY"  
+      ),  
+      h(  
+        "div",  
+        { style: { display: "flex", gap: 14, alignItems: "center", marginBottom: 10 } },  
+        h(  
+          "div",  
+          { style: { display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 4, background: "rgba(0,0,0,0.3)", padding: 8, borderRadius: 8, border: "1px solid rgba(127,224,170,0.15)" } },  
+          ledColors.map(function (c, i) {  
+            return h("span", {  
+              key: i,  
+              style: {  
+                width: 7, height: 7, borderRadius: 2, background: c, boxShadow: "0 0 5px " + c,  
+                animation: "twinkle " + (0.9 + (i % 5) * 0.18) + "s ease-in-out infinite alternate",  
+                animationDelay: (i * 0.04) + "s",  
+              },  
+            });  
+          })  
+        ),  
+        h(  
+          "div",  
+          { style: { fontSize: 10, color: "#7FE0AA", lineHeight: 1.5 } },  
+          h("div", null, "Colo: Equinix SG1"),  
+          h("div", null, "Failover: Standby ✅")  
+        )  
+      ),  
+      h(  
+        "div",  
+        { style: { fontSize: 12, color: "#B9F3CE", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" } },  
+        "› " + SECURITY_TICKER_MESSAGES[tickerIdx]  
+      )  
+    );  
+  }  
+  
+  /* ================= SETUP (first run) ================= */  
+  function SetupView(props) {  
+    var data = props.data, onStart = props.onStart;  
+    var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];  
+    var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];  
+    var s4 = useState(data.startDate || todayStr()), startDate = s4[0], setStartDate = s4[1];  
+  
+    return h(  
+      "div",  
+      { style: pageWrap("green") },  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 420, margin: "60px auto", textAlign: "center" } },  
+        h("div", { style: { fontSize: 44, marginBottom: 6 } }, "🪔"),  
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#EFFFF4", margin: "0 0 4px" } }, "Start your consistency streak"),  
+        h("p", { style: { fontSize: 13, color: "#9FE8BC", marginBottom: 20 } }, "Set your numbers once — they lock until the day before your target date."),  
+        h(  
+          "div",  
+          { style: { display: "flex", flexDirection: "column", gap: 10, textAlign: "left" } },  
+          h(Field, { label: "Current fund / capital (₹)", value: currentFund, setValue: setCurrentFund }),  
+          h(  
+            "div",  
+            { style: { fontSize: 11, color: "#7FE0AA" } },  
+            "Daily target: " + inr(FIXED_DAILY_TARGET) + " (fixed — " + ((FIXED_DAILY_TARGET / Number(currentFund || 1)) * 100).toFixed(0) + "% of capital)"  
+          ),  
+          h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),  
+          h(Field, { label: "Start date", value: startDate, setValue: setStartDate, type: "date" })  
+        ),  
+        h(  
+          "button",  
+          {  
+            onClick: function () {  
+              onStart({  
+                currentFund: Number(currentFund),  
+                dailyTarget: FIXED_DAILY_TARGET,  
+                streakGoalDays: Number(streakGoalDays),  
+                startDate: startDate,  
+              });  
+            },  
+            style: Object.assign({}, primaryBtn, { justifyContent: "center", width: "100%", marginTop: 16 }),  
+          },  
+          h(Flame, { size: 16 }),  
+          " Light the streak"  
+        )  
+      )  
+    );  
+  }  
+  
+  /* ================= GREEN THEME (default dashboard) ================= */  
+  function GreenView(props) {  
+    var data = props.data, currentStreak = props.currentStreak, remainingDays = props.remainingDays,  
+      loggedFund = props.loggedFund, projectedFund = props.projectedFund, completionValue = props.completionValue,  
+      targetDate = props.targetDate, loggedToday = props.loggedToday, showFestive = props.showFestive,  
+      hoursLeft = props.hoursLeft, previewFestive = props.previewFestive, setPreviewFestive = props.setPreviewFestive,  
+      canLogNow = props.canLogNow, logAmount = props.logAmount, setLogAmount = props.setLogAmount, onLog = props.onLog,  
+      editing = props.editing, setEditing = props.setEditing, canEditConfig = props.canEditConfig, unlockDate = props.unlockDate,  
+      saveConfig = props.saveConfig, petalHostRef = props.petalHostRef, crackerHostRef = props.crackerHostRef;  
+  
+    var ring = Math.min(currentStreak / Math.max(data.streakGoalDays, 1), 1);  
+    var circumference = 2 * Math.PI * 54;  
+    var todaysAmt = Number(((data.logs.find(function (l) { return l.date === todayStr(); })) || {}).amount || 0);  
+  
+    return h(  
+      "div",  
+      { style: pageWrap("green") },  
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 20 } }),  
+      showFestive ? h("div", { ref: crackerHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 21 } }) : null,  
+      showFestive ? h(FestiveAmbience) : null,  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 480, margin: "0 auto", zIndex: 6 } },  
+        h(  
+          "div",  
+          { style: { textAlign: "center", marginBottom: 22 } },  
+          h("div", { style: { fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: "#7FE0AA" } }, "Consistency Fund"),  
+          h(  
+            "h1",  
+            { style: { fontFamily: "'Baloo 2', cursive", fontSize: 15, fontWeight: 400, color: "#B9F3CE", margin: "4px 0 0" } },  
+            showFestive ? "the flame is still burning bright" : "stay lit, day after day"  
+          ),  
+          h(  
+            "div",  
+            { style: { fontSize: 10, color: "#5FA57F", marginTop: 4 } },  
+            "real celebration window: " + (props.hoursLeft > 0 ? props.hoursLeft + "h left" : "not active right now")  
+          )  
+        ),  
+        h(AlgoEngineStatus, { startDate: data.startDate }),  
+        h(InfraSecurityPanel),  
+        h(  
+          "div",  
+          { style: { display: "flex", justifyContent: "center", marginBottom: 18 } },  
+          h(  
+            "div",  
+            { style: { position: "relative", width: 152, height: 152 } },  
+            h(  
+              "svg",  
+              { width: 152, height: 152, style: { transform: "rotate(-90deg)" } },  
+              h("circle", { cx: 76, cy: 76, r: 54, stroke: "#0F3A2A", strokeWidth: 10, fill: "none" }),  
+              h("circle", {  
+                cx: 76, cy: 76, r: 54, stroke: "url(#flameGrad)", strokeWidth: 10, fill: "none", strokeLinecap: "round",  
+                strokeDasharray: circumference, strokeDashoffset: circumference * (1 - ring),  
+                style: { transition: "stroke-dashoffset 700ms ease" },  
+              }),  
+              h(  
+                "defs",  
+                null,  
+                h(  
+                  "linearGradient",  
+                  { id: "flameGrad", x1: "0%", y1: "0%", x2: "100%", y2: "100%" },  
+                  h("stop", { offset: "0%", stopColor: "#FFD23F" }),  
+                  h("stop", { offset: "100%", stopColor: "#39FF88" })  
+                )  
+              )  
+            ),  
+            h(  
+              "div",  
+              { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" } },  
+              h("span", { style: { fontSize: 26 } }, "🪔"),  
+              h("span", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700 } }, currentStreak),  
+              h("span", { style: { fontSize: 11, color: "#7FE0AA" } }, "day streak")  
+            )  
+          )  
+        ),  
+        h(  
+          "div",  
+          { style: heroBox },  
+          h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6 } }, "Projected fund"),  
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: "#EFFFF4" } }, inr(projectedFund)),  
+          h("div", { style: { fontSize: 12, color: "#9FE8BC", marginTop: 4 } }, "current + logged + (remaining × daily target)")  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },  
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Capital (base)", value: inr(data.currentFund) }),  
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Logged fund", value: inr(loggedFund) }),  
+          h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Start date", value: fmtDate(data.startDate) }),  
+          h(Stat, { icon: h(CalendarDays, { size: 16 }), label: "Target date", value: fmtDate(targetDate) })  
+        ),  
+        h(  
+          "div",  
+          { style: { marginBottom: 16 } },  
+          h(  
+            "div",  
+            { style: { background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 16, padding: "14px 16px" } },  
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#FFD23F", fontSize: 11 } }, h(Target, { size: 14 }), " If you complete this streak"),  
+            h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, fontWeight: 700, color: "#FFF3CF", marginTop: 2 } }, inr(completionValue)),  
+            h("div", { style: { fontSize: 11, color: "#F0D28B", marginTop: 2 } }, "logged days count as-is, remaining days assumed at daily target")  
+          )  
+        ),  
+        h(  
+          "div",  
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 12 } },  
+          loggedToday  
+            ? h(  
+                "div",  
+                { style: { textAlign: "center", color: "#B9F3CE", fontSize: 14 } },  
+                "✓ Today is logged (" + inr(todaysAmt) + "). ",  
+                showFestive ? "The celebration keeps going for " + hoursLeft + "h more." : "Come back tomorrow after 10 PM."  
+              )  
+            : canLogNow  
+            ? h(  
+                React.Fragment,  
+                null,  
+                h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 8 } }, "Log today's profit / loss"),  
+                h(  
+                  "div",  
+                  { style: { display: "flex", gap: 8 } },  
+                  h("input", {  
+                    type: "number",  
+                    value: logAmount,  
+                    onChange: function (e) { setLogAmount(e.target.value); },  
+                    placeholder: "e.g. " + data.dailyTarget + " or -1200 for a loss",  
+                    style: inputStyle,  
+                  }),  
+                  h("button", { onClick: onLog, style: primaryBtn }, h(Flame, { size: 16 }), " Log")  
+                )  
+              )  
+            : h(  
+                "div",  
+                { style: { textAlign: "center", color: "#7FE0AA", fontSize: 13, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },  
+                h(Lock, { size: 16 }),  
+                "Logging opens at 10:00 PM today"  
+              )  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "flex", justifyContent: "center", gap: 16, flexWrap: "wrap" } },  
+          h(  
+            "button",  
+            {  
+              onClick: function () { setEditing(function (e) { return !e; }); },  
+              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },  
+            },  
+            canEditConfig ? h(Unlock, { size: 12 }) : h(Lock, { size: 12 }),  
+            editing ? "close settings" : canEditConfig ? "edit fund / target / goal" : "locked until " + fmtDate(unlockDate)  
+          ),  
+          h(  
+            "button",  
+            {  
+              onClick: function () {  
+                setPreviewFestive(true);  
+                setTimeout(function () { setPreviewFestive(false); }, 15000);  
+              },  
+              disabled: previewFestive,  
+              style: {  
+                display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none",  
+                color: previewFestive ? "#FFD23F" : "#7FE0AA", fontSize: 12, cursor: previewFestive ? "default" : "pointer",  
+              },  
+            },  
+            "🎬 " + (previewFestive ? "previewing… (15s)" : "preview celebration") + (showFestive ? " (live now too)" : "")  
+          ),  
+          h(  
+            "button",  
+            {  
+              onClick: props.onOpenFunds,  
+              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },  
+            },  
+            "💰 withdrawals & deposits"  
+          ),  
+          h(  
+            "button",  
+            {  
+              onClick: props.onOpenCalendar,  
+              style: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", color: "#7FE0AA", fontSize: 12, cursor: "pointer" },  
+            },  
+            "📅 calendar"  
+          )  
+        ),  
+        editing && canEditConfig ? h(ConfigForm, { data: data, onSave: saveConfig }) : null,  
+        editing && !canEditConfig  
+          ? h(  
+              "div",  
+              { style: { marginTop: 10, textAlign: "center", fontSize: 12, color: "#FFB3B3" } },  
+              "Settings unlock one day before your target date (" + fmtDate(unlockDate) + ")."  
+            )  
+          : null,  
+        showFestive ? h(FlowerRain, { key: "flower-rain" }) : null  
+      )  
+    );  
+  }  
+  
+  /* Declarative flower rain — rendered as the LAST child inside the dashboard  
+     card itself, so it always paints on top of every other card without  
+     depending on any z-index/ref timing. Pure CSS animation, no raw DOM. */  
+  function FlowerRain(props) {  
+    var count = 16;  
+    var flowers = ["🌸", "🌺", "🌷", "🌼", "💮"];  
+    var seedRef = useRef(null);  
+    if (!seedRef.current) {  
+      var items = [];  
+      for (var i = 0; i < count; i++) {  
+        items.push({  
+          id: i,  
+          left: Math.random() * 96,  
+          delay: Math.random() * 6,  
+          dur: 6 + Math.random() * 5,  
+          size: 14 + Math.random() * 14,  
+          flower: flowers[i % flowers.length],  
+        });  
+      }  
+      seedRef.current = items;  
+    }  
+    return h(  
+      "div",  
+      { style: { position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" } },  
+      seedRef.current.map(function (it) {  
+        return h(  
+          "span",  
+          {  
+            key: it.id,  
+            style: {  
+              position: "absolute", left: it.left + "%", top: "-30px", fontSize: it.size,  
+              opacity: 0.8, animation: "petal-fall " + it.dur + "s linear " + it.delay + "s infinite",  
+            },  
+          },  
+          it.flower  
+        );  
+      })  
+    );  
+  }  
+  
+  function FestiveAmbience() {  
+    var colors = ["#FFD23F", "#FF6B35", "#FF3E7F", "#8CFFDA"];  
+    var dots = [];  
+    for (var i = 0; i < 24; i++) {  
+      dots.push(  
+        h("span", {  
+          key: i,  
+          style: {  
+            width: 8, height: 8, borderRadius: "50%",  
+            background: colors[i % 4],  
+            boxShadow: "0 0 8px " + colors[i % 4],  
+            animation: "twinkle " + (0.8 + (i % 5) * 0.15) + "s ease-in-out infinite alternate",  
+            animationDelay: (i * 0.05) + "s",  
+          },  
+        })  
+      );  
+    }  
+    return h(  
+      React.Fragment,  
+      null,  
+      h("div", { style: fairyRow }, dots),  
+      h("div", { style: { position: "absolute", bottom: 10, left: 10, fontSize: 34, animation: "diya-flicker 1s infinite", zIndex: 20 } }, "🪔"),  
+      h("div", { style: { position: "absolute", bottom: 10, right: 10, fontSize: 34, animation: "diya-flicker 1.1s infinite", zIndex: 20 } }, "🪔"),  
+      h("div", { style: { position: "absolute", top: 40, left: 10, fontSize: 28, animation: "diya-flicker 0.9s infinite", zIndex: 20 } }, "🪔"),  
+      h("div", { style: { position: "absolute", top: 40, right: 10, fontSize: 28, animation: "diya-flicker 1.05s infinite", zIndex: 20 } }, "🪔")  
+    );  
+  }  
+  
+  function Stat(props) {  
+    return h(  
+      "div",  
+      { style: { background: "rgba(6,32,23,0.55)", border: "1px solid rgba(127,224,170,0.18)", borderRadius: 14, padding: "12px 14px" } },  
+      h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#7FE0AA", fontSize: 11 } }, props.icon, " ", props.label),  
+      h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 16, fontWeight: 700, marginTop: 4 } }, props.value)  
+    );  
+  }  
+  
+  function ConfigForm(props) {  
+    var data = props.data, onSave = props.onSave;  
+    var s1 = useState(data.currentFund), currentFund = s1[0], setCurrentFund = s1[1];  
+    var s3 = useState(data.streakGoalDays), streakGoalDays = s3[0], setStreakGoalDays = s3[1];  
+    return h(  
+      "div",  
+      { style: { marginTop: 12, background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", gap: 8 } },  
+      h(Field, { label: "Current fund / capital (₹)", value: currentFund, setValue: setCurrentFund }),  
+      h(  
+        "div",  
+        { style: { fontSize: 11, color: "#7FE0AA" } },  
+        "Daily target: " + inr(FIXED_DAILY_TARGET) + " (fixed — " + ((FIXED_DAILY_TARGET / Number(currentFund || 1)) * 100).toFixed(0) + "% of capital)"  
+      ),  
+      h(Field, { label: "Streak goal (days)", value: streakGoalDays, setValue: setStreakGoalDays }),  
+      h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "Start date stays fixed at " + fmtDate(data.startDate) + "."),  
+      h(  
+        "button",  
+        {  
+          onClick: function () {  
+            onSave({ currentFund: Number(currentFund), dailyTarget: FIXED_DAILY_TARGET, streakGoalDays: Number(streakGoalDays) });  
+          },  
+          style: Object.assign({}, primaryBtn, { justifyContent: "center", marginTop: 4 }),  
+        },  
+        "Save"  
+      )  
+    );  
+  }  
+  
+  function Field(props) {  
+    var type = props.type || "number";  
+    return h(  
+      "label",  
+      { style: { fontSize: 11, color: "#7FE0AA", display: "flex", flexDirection: "column", gap: 4 } },  
+      props.label,  
+      h("input", { type: type, value: props.value, onChange: function (e) { props.setValue(e.target.value); }, style: inputStyle })  
+    );  
+  }  
+  
+  function FundsView(props) {  
+    var data = props.data, currentFundsOps = props.currentFundsOps, totalProfitLogged = props.totalProfitLogged,  
+      estimate100 = props.estimate100, vaultBalance = props.vaultBalance,  
+      vaultReviewCount = props.vaultReviewCount, onBack = props.onBack, addDeposit = props.addDeposit,  
+      addWithdrawal = props.addWithdrawal, saveWithdrawalAccount = props.saveWithdrawalAccount,  
+      totalCashWithdrawn = props.totalCashWithdrawn, totalProfitWithdrawn = props.totalProfitWithdrawn,  
+      cashWithdrawals = props.cashWithdrawals, profitWithdrawals = props.profitWithdrawals;  
+  
+    var s1 = useState(null), openForm = s1[0], setOpenForm = s1[1]; // 'deposit' | 'withdraw' | 'account' | null  
+    var s2 = useState(""), amount = s2[0], setAmount = s2[1];  
+    var s3 = useState(""), passcode = s3[0], setPasscode = s3[1];  
+    var s4 = useState(""), formError = s4[0], setFormError = s4[1];  
+    var s5 = useState(data.withdrawalAccount ? data.withdrawalAccount.method : ""), method = s5[0], setMethod = s5[1];  
+    var af = (data.withdrawalAccount && data.withdrawalAccount.fields) || {};  
+    var s6 = useState(af.upiId || ""), upiId = s6[0], setUpiId = s6[1];  
+    var s6b = useState(af.accountNumber || ""), accountNumber = s6b[0], setAccountNumber = s6b[1];  
+    var s6c = useState(af.bankName || ""), bankName = s6c[0], setBankName = s6c[1];  
+    var s6d = useState(af.ifsc || ""), ifsc = s6d[0], setIfsc = s6d[1];  
+    var s6e = useState(af.receiverName || ""), receiverName = s6e[0], setReceiverName = s6e[1];  
+    var s6f = useState(af.walletAddress || ""), walletAddress = s6f[0], setWalletAddress = s6f[1];  
+    var s7 = useState("cash"), withdrawType = s7[0], setWithdrawType = s7[1]; // 'cash' | 'profit'  
+  
+    function resetForm() {  
+      setOpenForm(null); setAmount(""); setPasscode(""); setFormError(""); setWithdrawType("cash");  
+    }  
+  
+    function submitDeposit() {  
+      var err = addDeposit(amount, passcode);  
+      if (err) { setFormError(err); return; }  
+      resetForm();  
+    }  
+    function submitWithdraw() {  
+      var err = addWithdrawal(amount, passcode, withdrawType);  
+      if (err) { setFormError(err); return; }  
+      resetForm();  
+    }  
+    function submitAccount() {  
+      var fields = {};  
+      if (method === "upi") fields = { upiId: upiId };  
+      else if (method === "bank") fields = { accountNumber: accountNumber, bankName: bankName, ifsc: ifsc, receiverName: receiverName };  
+      else if (method === "usdt" || method === "tron") fields = { walletAddress: walletAddress };  
+      var err = saveWithdrawalAccount(method, fields, passcode);  
+      if (err) { setFormError(err); return; }  
+      resetForm();  
+    }  
+  
+    var methodLabel = "";  
+    if (data.withdrawalAccount) {  
+      var m = WITHDRAWAL_METHODS.find(function (x) { return x.id === data.withdrawalAccount.method; });  
+      var f = data.withdrawalAccount.fields || {};  
+      var parts = [];  
+      if (data.withdrawalAccount.method === "upi") {  
+        if (f.upiId) parts.push("UPI: " + f.upiId);  
+      } else if (data.withdrawalAccount.method === "bank") {  
+        if (f.receiverName) parts.push(f.receiverName);  
+        if (f.accountNumber) parts.push("A/C " + f.accountNumber);  
+        if (f.bankName) parts.push(f.bankName);  
+        if (f.ifsc) parts.push("IFSC " + f.ifsc);  
+      } else if (data.withdrawalAccount.method === "usdt" || data.withdrawalAccount.method === "tron") {  
+        if (f.walletAddress) parts.push(f.walletAddress);  
+      }  
+      methodLabel = (m ? m.icon + " " + m.label : data.withdrawalAccount.method) + (parts.length ? " — " + parts.join(" · ") : "");  
+    }  
+  
+    function historyRow(item, key) {  
+      return h(  
+        "div",  
+        { key: key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid rgba(127,224,170,0.12)" } },  
+        h(  
+          "div",  
+          null,  
+          h("div", { style: { fontSize: 13, color: "#EAF7EF" } }, fmtDate(item.date) + " · " + item.time),  
+          h("div", { style: { fontSize: 11, color: "#7FE0AA" } }, "✅ " + (item.status || "SUCCESS"))  
+        ),  
+        h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 18, fontWeight: 700, color: "#EFFFF4" } }, inr(item.amount))  
+      );  
+    }  
+  
+    return h(  
+      "div",  
+      { style: pageWrap("green") },  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 480, margin: "0 auto" } },  
+        h(  
+          "div",  
+          { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 } },  
+          h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),  
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "💰 Withdrawals & Deposits")  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "grid", gridTemplateColumns: "1fr", gap: 10, marginBottom: 10 } },  
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Current funds (capital + deposits − cash withdrawals)", value: inr(currentFundsOps) }),  
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit logged (all days so far)", value: inr(totalProfitLogged) }),  
+          h(Stat, { icon: h(Target, { size: 16 }), label: "Estimate at day 100", value: inr(estimate100) })  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 } },  
+          h(Stat, { icon: h(Wallet, { size: 16 }), label: "Total cash withdrawal", value: inr(totalCashWithdrawn) }),  
+          h(Stat, { icon: h(IndianRupee, { size: 16 }), label: "Total profit withdrawn", value: inr(totalProfitWithdrawn) }),  
+          h(Stat, { icon: h(Target, { size: 16 }), label: "Withdrawal pending", value: inr(totalProfitLogged - totalProfitWithdrawn) })  
+        ),  
+        h(  
+          "div",  
+          { style: { background: "linear-gradient(160deg, rgba(255,178,39,0.14), rgba(255,178,39,0.03))", border: "1px solid rgba(255,210,63,0.3)", borderRadius: 16, padding: "14px 16px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" } },  
+          h(  
+            "div",  
+            null,  
+            h("div", { style: { color: "#FFD23F", fontSize: 11 } }, "🏦 SURPLUS VAULT"),  
+            h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, fontWeight: 700, color: "#FFF3CF" } }, inr(vaultBalance)),  
+            h("div", { style: { fontSize: 11, color: "#F0D28B", marginTop: 2 } }, "Profit above " + inr(VAULT_THRESHOLD) + "/day is stored here")  
+          ),  
+          h("div", { style: { color: "#FFD23F", fontSize: 12 } }, vaultReviewCount + " / 15 withdrawals")  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "flex", gap: 10, marginBottom: 16 } },  
+          h(  
+            "button",  
+            { onClick: function () { setOpenForm(openForm === "deposit" ? null : "deposit"); setFormError(""); }, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) },  
+            "➕ Deposit"  
+          ),  
+          h(  
+            "button",  
+            { onClick: function () { setOpenForm(openForm === "withdraw" ? null : "withdraw"); setFormError(""); }, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center", background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) },  
+            "💸 Withdraw"  
+          )  
+        ),  
+        openForm === "deposit"  
+          ? h(  
+              "div",  
+              { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },  
+              h("input", { type: "number", placeholder: "Deposit amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),  
+              h("input", { type: "password", placeholder: "Deposit passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),  
+              formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,  
+              h(  
+                "div",  
+                { style: { display: "flex", gap: 8 } },  
+                h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),  
+                h("button", { onClick: submitDeposit, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) }, "Confirm")  
+              )  
+            )  
+          : null,  
+        openForm === "withdraw"  
+          ? h(  
+              "div",  
+              { style: { background: "rgba(6,32,23,0.7)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 } },  
+              h(  
+                "div",  
+                { style: { display: "flex", gap: 8 } },  
+                h(  
+                  "button",  
+                  {  
+                    onClick: function () { setWithdrawType("cash"); },  
+                    style: {  
+                      flex: 1, padding: "8px", borderRadius: 8, cursor: "pointer",  
+                      border: withdrawType === "cash" ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",  
+                      background: withdrawType === "cash" ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", fontSize: 12,  
+                    },  
+                  },  
+                  "💸 Cash (from capital)"  
+                ),  
+                h(  
+                  "button",  
+                  {  
+                    onClick: function () { setWithdrawType("profit"); },  
+                    style: {  
+                      flex: 1, padding: "8px", borderRadius: 8, cursor: "pointer",  
+                      border: withdrawType === "profit" ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",  
+                      background: withdrawType === "profit" ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", fontSize: 12,  
+                    },  
+                  },  
+                  "📈 Profit"  
+                )  
+              ),  
+              h("input", { type: "number", placeholder: "Withdraw amount (₹)", value: amount, onChange: function (e) { setAmount(e.target.value); }, style: inputStyle }),  
+              h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),  
+              formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,  
+              h(  
+                "div",  
+                { style: { display: "flex", gap: 8 } },  
+                h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),  
+                h("button", { onClick: submitWithdraw, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center", background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) }, "Confirm")  
+              )  
+            )  
+          : null,  
+        h(  
+          "div",  
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },  
+          h(  
+            "div",  
+            { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },  
+            h("div", { style: { color: "#7FE0AA", fontSize: 12 } }, "🏦 WITHDRAWAL ACCOUNT"),  
+            h(  
+              "button",  
+              { onClick: function () { setOpenForm(openForm === "account" ? null : "account"); setFormError(""); }, style: { background: "transparent", border: "none", color: "#FFD23F", fontSize: 12, cursor: "pointer" } },  
+              "✏️ Edit"  
+            )  
+          ),  
+          h("div", { style: { color: "#EAF7EF", fontSize: 13 } }, methodLabel || "Not set — tap Edit to add one"),  
+          openForm === "account"  
+            ? h(  
+                "div",  
+                { style: { marginTop: 12, display: "flex", flexDirection: "column", gap: 8 } },  
+                h(  
+                  "div",  
+                  { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },  
+                  WITHDRAWAL_METHODS.map(function (m) {  
+                    return h(  
+                      "button",  
+                      {  
+                        key: m.id,  
+                        onClick: function () { setMethod(m.id); },  
+                        style: {  
+                          padding: "10px", borderRadius: 10, border: method === m.id ? "1px solid #FFD23F" : "1px solid rgba(127,224,170,0.3)",  
+                          background: method === m.id ? "rgba(255,210,63,0.15)" : "rgba(6,32,23,0.5)", color: "#EAF7EF", cursor: "pointer",  
+                        },  
+                      },  
+                      m.icon + " " + m.label  
+                    );  
+                  })  
+                ),  
+                method === "upi"  
+                  ? h("input", { placeholder: "UPI ID", value: upiId, onChange: function (e) { setUpiId(e.target.value); }, style: inputStyle })  
+                  : method === "bank"  
+                  ? h(  
+                      React.Fragment,  
+                      null,  
+                      h("input", { placeholder: "Bank account number", value: accountNumber, onChange: function (e) { setAccountNumber(e.target.value); }, style: inputStyle }),  
+                      h("input", { placeholder: "Bank name", value: bankName, onChange: function (e) { setBankName(e.target.value); }, style: inputStyle }),  
+                      h("input", { placeholder: "IFSC code", value: ifsc, onChange: function (e) { setIfsc(e.target.value); }, style: inputStyle }),  
+                      h("input", { placeholder: "Receiver name", value: receiverName, onChange: function (e) { setReceiverName(e.target.value); }, style: inputStyle })  
+                    )  
+                  : method === "usdt" || method === "tron"  
+                  ? h("input", { placeholder: "Wallet address", value: walletAddress, onChange: function (e) { setWalletAddress(e.target.value); }, style: inputStyle })  
+                  : h("div", { style: { fontSize: 12, color: "#7FE0AA" } }, "Choose a method above first."),  
+                h("input", { type: "password", placeholder: "Withdrawal passcode", value: passcode, onChange: function (e) { setPasscode(e.target.value); }, style: inputStyle }),  
+                formError ? h("div", { style: { color: "#FFB3B3", fontSize: 12 } }, formError) : null,  
+                h(  
+                  "div",  
+                  { style: { display: "flex", gap: 8 } },  
+                  h("button", { onClick: resetForm, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid rgba(127,224,170,0.3)", background: "transparent", color: "#7FE0AA" } }, "Cancel"),  
+                  h("button", { onClick: submitAccount, style: Object.assign({}, primaryBtn, { flex: 1, justifyContent: "center" }) }, "Save Account")  
+                )  
+              )  
+            : null  
+        ),  
+        h(  
+          "div",  
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },  
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "💸 CASH WITHDRAWAL HISTORY"),  
+          cashWithdrawals.length  
+            ? cashWithdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "cw" + i); })  
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No cash withdrawals yet.")  
+        ),  
+        h(  
+          "div",  
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16, marginBottom: 16 } },  
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📈 PROFIT WITHDRAWAL HISTORY"),  
+          profitWithdrawals.length  
+            ? profitWithdrawals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (w, i) { return historyRow(w, "pw" + i); })  
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No profit withdrawals yet.")  
+        ),  
+        h(  
+          "div",  
+          { style: { background: "rgba(6,32,23,0.6)", border: "1px solid rgba(127,224,170,0.2)", borderRadius: 16, padding: 16 } },  
+          h("div", { style: { color: "#7FE0AA", fontSize: 12, marginBottom: 6 } }, "📥 DEPOSIT HISTORY"),  
+          data.deposits.length  
+            ? data.deposits.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (d, i) { return historyRow(d, "d" + i); })  
+            : h("div", { style: { color: "#9FE8BC", fontSize: 12 } }, "No deposits yet.")  
+        )  
+      )  
+    );  
+  }  
+  
+  function CalendarView(props) {  
+    var data = props.data, targetDate = props.targetDate, onBack = props.onBack;  
+    var startMonth = data.startDate ? data.startDate.slice(0, 7) : todayStr().slice(0, 7); // "YYYY-MM"  
+    var s1 = useState(todayStr().slice(0, 7)), viewMonth = s1[0], setViewMonth = s1[1];  
+    var s2 = useState(null), selectedDate = s2[0], setSelectedDate = s2[1];  
+  
+    var logsByDate = {};  
+    data.logs.forEach(function (l) { logsByDate[l.date] = l; });  
+  
+    function shiftMonth(delta) {  
+      var parts = viewMonth.split("-");  
+      var d = new Date(Number(parts[0]), Number(parts[1]) - 1 + delta, 1);  
+      setViewMonth(d.getFullYear() + "-" + pad(d.getMonth() + 1));  
+      setSelectedDate(null);  
+    }  
+  
+    var parts = viewMonth.split("-");  
+    var year = Number(parts[0]), monthIdx = Number(parts[1]) - 1;  
+    var firstOfMonth = new Date(year, monthIdx, 1);  
+    var startWeekday = firstOfMonth.getDay();  
+    var daysInMonth = new Date(year, monthIdx + 1, 0).getDate();  
+    var monthLabel = firstOfMonth.toLocaleDateString("en-IN", { month: "long", year: "numeric" });  
+  
+    var cells = [];  
+    for (var i = 0; i < startWeekday; i++) cells.push(null);  
+    for (var day = 1; day <= daysInMonth; day++) {  
+      cells.push(year + "-" + pad(monthIdx + 1) + "-" + pad(day));  
+    }  
+  
+    var selectedLog = selectedDate ? logsByDate[selectedDate] : null;  
+    var inRange = function (ds) { return data.startDate && ds >= data.startDate && (!targetDate || ds <= targetDate); };  
+  
+    return h(  
+      "div",  
+      { style: pageWrap("green") },  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 480, margin: "0 auto" } },  
+        h(  
+          "div",  
+          { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 } },  
+          h("button", { onClick: onBack, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 20, cursor: "pointer" } }, "←"),  
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 20, color: "#EFFFF4" } }, "📅 Daily Profit Calendar")  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },  
+          h("button", { onClick: function () { shiftMonth(-1); }, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 18, cursor: "pointer" } }, "‹"),  
+          h("div", { style: { color: "#EAF7EF", fontFamily: "'Baloo 2', cursive", fontSize: 16 } }, monthLabel),  
+          h("button", { onClick: function () { shiftMonth(1); }, style: { background: "transparent", border: "none", color: "#7FE0AA", fontSize: 18, cursor: "pointer" } }, "›")  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 6 } },  
+          ["S", "M", "T", "W", "T", "F", "S"].map(function (d, i) {  
+            return h("div", { key: "hd" + i, style: { textAlign: "center", fontSize: 10, color: "#7FE0AA" } }, d);  
+          })  
+        ),  
+        h(  
+          "div",  
+          { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 16 } },  
+          cells.map(function (ds, i) {  
+            if (!ds) return h("div", { key: "e" + i });  
+            var log = logsByDate[ds];  
+            var active = inRange(ds);  
+            var isSelected = ds === selectedDate;  
+            var bg = !active ? "rgba(6,32,23,0.3)" : log ? (Number(log.amount) >= 0 ? "rgba(57,255,136,0.18)" : "rgba(255,80,80,0.25)") : "rgba(6,32,23,0.55)";  
+            return h(  
+              "button",  
+              {  
+                key: ds,  
+                onClick: function () { if (active) setSelectedDate(ds); },  
+                disabled: !active,  
+                style: {  
+                  aspectRatio: "1", borderRadius: 8, border: isSelected ? "2px solid #FFD23F" : "1px solid rgba(127,224,170,0.15)",  
+                  background: bg, color: active ? "#EAF7EF" : "#3F5F52", fontSize: 12, cursor: active ? "pointer" : "default", padding: 0,  
+                },  
+              },  
+              String(Number(ds.slice(8, 10)))  
+            );  
+          })  
+        ),  
+        selectedLog  
+          ? h(RevealCard, { key: selectedLog.date, log: selectedLog })  
+          : selectedDate  
+          ? h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 13 } }, fmtDate(selectedDate) + " — no entry logged.")  
+          : h("div", { style: { textAlign: "center", color: "#9FE8BC", fontSize: 12 } }, "Tap a day to see that day's profit.")  
+      )  
+    );  
+  }  
+  
+  /* cinematic reveal for a selected calendar day: glow + light sweep + count-up */  
+  function RevealCard(props) {  
+    var log = props.log;  
+    var isProfit = Number(log.amount) >= 0;  
+    var target = Math.abs(Number(log.amount));  
+    var s1 = useState(0), displayed = s1[0], setDisplayed = s1[1];  
+  
+    useEffect(function () {  
+      var start = null;  
+      var duration = 700;  
+      var raf;  
+      function step(ts) {  
+        if (!start) start = ts;  
+        var progress = Math.min((ts - start) / duration, 1);  
+        var eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic  
+        setDisplayed(Math.round(target * eased));  
+        if (progress < 1) raf = requestAnimationFrame(step);  
+      }  
+      raf = requestAnimationFrame(step);  
+      return function () { cancelAnimationFrame(raf); };  
+    }, [log.date, target]);  
+  
+    var glow = isProfit ? "57,255,136" : "255,80,80";  
+    var textColor = isProfit ? "#EFFFF4" : "#FFD2D2";  
+  
+    return h(  
+      "div",  
+      {  
+        style: {  
+          position: "relative", overflow: "hidden", textAlign: "center", borderRadius: 20, padding: "26px 20px",  
+          background: "radial-gradient(circle at 50% 0%, rgba(" + glow + ",0.22) 0%, rgba(6,32,23,0.9) 70%)",  
+          border: "1px solid rgba(" + glow + ",0.45)",  
+          boxShadow: "0 0 30px rgba(" + glow + ",0.35)",  
+          animation: "reveal-pop 480ms cubic-bezier(.2,1.4,.4,1)",  
+        },  
+      },  
+      h("div", { style: { position: "absolute", inset: 0, background: "linear-gradient(115deg, transparent 40%, rgba(255,255,255,0.18) 50%, transparent 60%)", animation: "sweep 900ms ease-out", pointerEvents: "none" } }),  
+      h("div", { style: { fontSize: 28, marginBottom: 4 } }, isProfit ? "✨" : "💥"),  
+      h("div", { style: { fontSize: 12, color: "#7FE0AA", marginBottom: 6, letterSpacing: 1 } }, fmtDate(log.date)),  
+      h(  
+        "div",  
+        { style: { fontFamily: "'Baloo 2', cursive", fontSize: 40, fontWeight: 700, color: textColor, textShadow: "0 0 18px rgba(" + glow + ",0.6)" } },  
+        inr(isProfit ? displayed : -displayed)  
+      ),  
+      h("div", { style: { fontSize: 11, color: isProfit ? "#9FE8BC" : "#FFB3B3", marginTop: 6 } }, isProfit ? "Profit day" : "Loss day")  
+    );  
+  }  
+  
+  function LossPunishView(props) {  
+    var data = props.data, lastLog = props.lastLog, hoursLeft = props.hoursLeft,  
+      projectedFund = props.projectedFund, remainingDays = props.remainingDays, petalHostRef = props.petalHostRef;  
+    var amt = Number(lastLog.amount);  
+    return h(  
+      "div",  
+      { style: pageWrap("red") },  
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 20 } }),  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 440, margin: "80px auto", textAlign: "center" } },  
+        h("div", { style: { fontSize: 44, marginBottom: 6 } }, "🕯️💨"),  
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 24, color: "#FFF", margin: "0 0 8px" } }, "That day cost you " + inr(Math.abs(amt))),  
+        h(  
+          "p",  
+          { style: { fontSize: 13, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" } },  
+          "The streak still counts — you showed up and logged it — but the diya burns red for a full 24 hours as a reminder that day went backwards, not forwards. " +  
+            (hoursLeft > 0 ? hoursLeft + "h left." : "")  
+        ),  
+        h(AlgoEngineStatus, { startDate: data.startDate }),  
+        h(InfraSecurityPanel),  
+        h(  
+          "div",  
+          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16 } },  
+          h("div", { style: { fontSize: 12, color: "#FFB3B3" } }, "Projected fund still stands at"),  
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 30, fontWeight: 700, color: "#fff" } }, inr(projectedFund)),  
+          h("div", { style: { fontSize: 12, color: "#FFB3B3", marginTop: 6 } }, remainingDays + " days still needed")  
+        )  
+      )  
+    );  
+  }  
+  
+  function RedRegretView(props) {  
+    var data = props.data, remainingDays = props.remainingDays, projectedFund = props.projectedFund,  
+      gapSinceLast = props.gapSinceLast, logAmount = props.logAmount, setLogAmount = props.setLogAmount,  
+      canLogNow = props.canLogNow, onLog = props.onLog, petalHostRef = props.petalHostRef;  
+    var potentialProfit = data.streakGoalDays * Number(data.dailyTarget || 0);  
+    return h(  
+      "div",  
+      { style: pageWrap("red") },  
+      h("div", { ref: petalHostRef, style: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", zIndex: 20 } }),  
+      h(  
+        "div",  
+        { style: { position: "relative", maxWidth: 440, margin: "60px auto", textAlign: "center" } },  
+        h("div", { style: { fontSize: 46, marginBottom: 6 } }, "🕯️💨"),  
+        h("h1", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 26, margin: "0 0 8px", color: "#FFF" } }, "The streak went out."),  
+        h(  
+          "p",  
+          { style: { fontSize: 14, color: "#FFC2C2", lineHeight: 1.6, margin: "0 0 18px" } },  
+          (gapSinceLast > 1 ? (gapSinceLast - 1) + " day(s) went unlogged. " : "") +  
+            "On " + inr(data.currentFund) + ", " + data.streakGoalDays + " consistent days at " + inr(data.dailyTarget) + "/day were worth ",  
+          h("b", null, inr(potentialProfit)),  
+          ". A missed day resets the streak count — remaining days needed is now ",  
+          h("b", null, remainingDays),  
+          ", not less."  
+        ),  
+        h(AlgoEngineStatus, { startDate: data.startDate }),  
+        h(InfraSecurityPanel),  
+        h(  
+          "div",  
+          { style: { background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,120,120,0.35)", borderRadius: 16, padding: 16, marginBottom: 16 } },  
+          h("div", { style: { fontSize: 12, color: "#FFB3B3" } }, "Projected fund right now"),  
+          h("div", { style: { fontFamily: "'Baloo 2', cursive", fontSize: 34, fontWeight: 700, color: "#fff" } }, inr(projectedFund)),  
+          h("div", { style: { fontSize: 12, color: "#FFB3B3", marginTop: 6 } }, "Streak reset to 0 · " + remainingDays + " days still needed")  
+        ),  
+        canLogNow  
+          ? h(  
+              "div",  
+              { style: { display: "flex", gap: 8, marginBottom: 6 } },  
+              h("input", {  
+                type: "number",  
+                value: logAmount,  
+                onChange: function (e) { setLogAmount(e.target.value); },  
+                placeholder: "log today's profit/loss",  
+                style: Object.assign({}, inputStyle, { background: "rgba(0,0,0,0.4)", borderColor: "#FF7A7A", color: "#fff" }),  
+              }),  
+              h(  
+                "button",  
+                { onClick: onLog, style: Object.assign({}, primaryBtn, { background: "linear-gradient(135deg,#FF6B35,#FFB627)", color: "#3D0000" }) },  
+                "🪔 Relight"  
+              )  
+            )  
+          : h(  
+              "div",  
+              { style: { fontSize: 13, color: "#FFB3B3", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },  
+              h(Lock, { size: 14 }),  
+              " Relighting opens at 10:00 PM"  
+            ),  
+        h("div", { style: { fontSize: 11, color: "#FF9B9B", marginTop: 6 } }, "Don't let ₹ sit idle again — log the day it happens.")  
+      )  
+    );  
+  }  
+  
+  /* ================= main component ================= */  
+  function FundStreakTracker() {  
+    var s0 = useState(DEFAULT_STATE), data = s0[0], setData = s0[1];  
+    var sl = useState(false), loaded = sl[0], setLoaded = sl[1];  
+    var su = useState(false), unlocked = su[0], setUnlocked = su[1];  
+    var sbt = useState(false), booted = sbt[0], setBooted = sbt[1];  
+    var se = useState(false), editing = se[0], setEditing = se[1];  
+    var sa = useState(""), logAmount = sa[0], setLogAmount = sa[1];  
+    var sn = useState(new Date()), now = sn[0], setNow = sn[1];  
+    var sp = useState(false), previewFestive = sp[0], setPreviewFestive = sp[1];  
+    var sf = useState(false), showFunds = sf[0], setShowFunds = sf[1];  
+    var sc = useState(false), showCalendar = sc[0], setShowCalendar = sc[1];  
+    var petalHostRef = useRef(null);  
+    var crackerHostRef = useRef(null);  
+    var reducedMotion = useRef(  
+      typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches  
+    );  
+  
+    useEffect(function () {  
+      var cancelled = false;  
+      storage.get(STORAGE_KEY).then(function (res) {  
+        if (cancelled) return;  
+        if (res && res.value) {  
+          try { setData(Object.assign({}, DEFAULT_STATE, JSON.parse(res.value))); } catch (e) {}  
+        }  
+        setLoaded(true);  
+      }).catch(function () { if (!cancelled) setLoaded(true); });  
+      return function () { cancelled = true; };  
+    }, []);  
+  
+    useEffect(function () {  
+      var t = setInterval(function () { setNow(new Date()); }, 15000);  
+      return function () { clearInterval(t); };  
+    }, []);  
+  
+    var persist = useCallback(function (next) {  
+      setData(next);  
+      storage.set(STORAGE_KEY, JSON.stringify(next)).catch(function (e) { console.error("save failed", e); });  
+    }, []);  
+  
+    var sortedLogs = data.logs.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });  
+    var loggedFund = sortedLogs.reduce(function (s, l) { return s + Number(l.amount || 0); }, 0);  
+  
+    var currentStreak = 0;  
+    if (sortedLogs.length) {  
+      var gapToToday = daysBetween(sortedLogs[sortedLogs.length - 1].date, todayStr());  
+      if (gapToToday <= 1) {  
+        currentStreak = 1;  
+        for (var i = sortedLogs.length - 1; i > 0; i--) {  
+          if (daysBetween(sortedLogs[i - 1].date, sortedLogs[i].date) === 1) currentStreak++;  
+          else break;  
+        }  
+      }  
+    }  
+  
+    var lastLogDate = sortedLogs.length ? sortedLogs[sortedLogs.length - 1].date : null;  
+    var gapSinceLast = lastLogDate ? daysBetween(lastLogDate, todayStr()) : 0;  
+    var missedAtLeastOneDay = data.startDate && lastLogDate !== null && gapSinceLast >= 2;  
+    var missedFromStartWithNoLog = data.startDate && lastLogDate === null && daysBetween(data.startDate, todayStr()) >= 1;  
+    var isBroken = missedAtLeastOneDay || missedFromStartWithNoLog;  
+  
+    var todayLog = data.logs.find(function (l) { return l.date === todayStr(); });  
+    var loggedToday = !!todayLog;  
+  
+    var lastLog = sortedLogs.length ? sortedLogs[sortedLogs.length - 1] : null;  
+    var lastLogAt = lastLog ? new Date(lastLog.loggedAt || (lastLog.date + "T12:00:00")) : null;  
+    var msSinceLastLog = lastLogAt ? now - lastLogAt : Infinity;  
+    var within24h = msSinceLastLog < 24 * 60 * 60 * 1000;  
+    var celebratingProfit = within24h && lastLog && Number(lastLog.amount) >= 0;  
+    var celebratingLoss = within24h && lastLog && Number(lastLog.amount) < 0;  
+    var hoursLeft = within24h ? Math.max(0, Math.ceil((24 * 60 * 60 * 1000 - msSinceLastLog) / (60 * 60 * 1000))) : 0;  
+  
+    var remainingDays = Math.max(data.streakGoalDays - currentStreak, 0);  
+    var daysLoggedCount = data.logs.length;  
+    var avgDailyProfit = daysLoggedCount > 0 ? loggedFund / daysLoggedCount : 0;  
+    var effectiveDailyRate = avgDailyProfit > Number(data.dailyTarget || 0) ? avgDailyProfit : Number(data.dailyTarget || 0);  
+    var projectedFund = Number(data.currentFund || 0) + loggedFund + remainingDays * effectiveDailyRate;  
+  
+    var targetDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 1) : null;  
+    var completionValue = 0;  
+    if (data.startDate) {  
+      for (var d = 0; d < data.streakGoalDays; d++) {  
+        var dDate = addDays(data.startDate, d);  
+        var log = data.logs.find(function (l) { return l.date === dDate; });  
+        completionValue += log ? Number(log.amount) : Number(data.dailyTarget || 0);  
+      }  
+    } else {  
+      completionValue = data.streakGoalDays * Number(data.dailyTarget || 0);  
+    }  
+  
+    var unlockDate = data.startDate ? addDays(data.startDate, data.streakGoalDays - 2) : null;  
+    var canEditConfig = !data.startDate || todayStr() >= unlockDate;  
+    var canLogNow = data.logs.length === 0 || now.getHours() >= LOG_HOUR;  
+  
+    var mode = "green";  
+    if (isBroken) mode = "broken";  
+    else if (celebratingLoss) mode = "loss";  
+  
+    var showFestive = celebratingProfit || previewFestive;  
+  
+    /* auto-fill any missed days (including full backfill from a past start date) */  
+    useEffect(function () {  
+      var updated = ensureAutoLogs(data, now);  
+      if (updated) persist(Object.assign({}, data, { logs: updated }));  
+    }, [data, now]);  
+  
+    /* petal rain only during the 24h post-profit celebration window */  
+    useEffect(function () {  
+      if (!showFestive) return;  
+      var host = petalHostRef.current;  
+      if (!host) return;  
+      var petals = ["🌿", "🍃", "🌸"];  
+      var alive = true;  
+      function spawn() {  
+        if (!alive) return;  
+        var el = document.createElement("span");  
+        el.textContent = petals[Math.floor(Math.random() * petals.length)];  
+        el.style.position = "absolute";  
+        el.style.left = Math.random() * 100 + "%";  
+        el.style.top = "-40px";  
+        el.style.fontSize = 14 + Math.random() * 16 + "px";  
+        el.style.opacity = 0.55 + Math.random() * 0.35;  
+        var dur = 7 + Math.random() * 6;  
+        el.style.animation = "petal-fall " + dur + "s linear forwards";  
+        host.appendChild(el);  
+        setTimeout(function () { el.remove(); }, dur * 1000 + 100);  
+      }  
+      var interval = setInterval(spawn, 420);  
+      return function () { alive = false; clearInterval(interval); };  
+    }, [showFestive]);  
+  
+    /* ambient diwali bursts */  
+    useEffect(function () {  
+      if (mode !== "green" || !showFestive) return;  
+      var host = crackerHostRef.current;  
+      if (!host) return;  
+      var alive = true;  
+      function burst() {  
+        if (!alive) return;  
+        var colors = ["#FFB627", "#FF6B35", "#FFD23F", "#FF3E7F", "#8CFFDA", "#FFF"];  
+        var cx = 15 + Math.random() * 70;  
+        var cy = 10 + Math.random() * 40;  
+        for (var i = 0; i < 20; i++) {  
+          var p = document.createElement("span");  
+          var angle = (Math.PI * 2 * i) / 20;  
+          var dist = 55 + Math.random() * 65;  
+          p.style.position = "absolute";  
+          p.style.left = cx + "%";  
+          p.style.top = cy + "%";  
+          p.style.width = p.style.height = 5 + Math.random() * 4 + "px";  
+          p.style.borderRadius = "50%";  
+          p.style.background = colors[Math.floor(Math.random() * colors.length)];  
+          p.style.boxShadow = "0 0 8px " + colors[Math.floor(Math.random() * colors.length)];  
+          p.style.setProperty("--dx", Math.cos(angle) * dist + "px");  
+          p.style.setProperty("--dy", Math.sin(angle) * dist + "px");  
+          p.style.animation = "cracker-burst 900ms ease-out forwards";  
+          host.appendChild(p);  
+          setTimeout(function () { p.remove(); }, 950);  
+        }  
+      }  
+      burst();  
+      var interval = setInterval(burst, 18000);  
+      return function () { alive = false; clearInterval(interval); };  
+    }, [mode, showFestive]);  
+  
+    /* ambient ash/ember during loss/broken punishment */  
+    useEffect(function () {  
+      if (mode === "green") return;  
+      var host = petalHostRef.current;  
+      if (!host) return;  
+      var alive = true;  
+      function spawn() {  
+        if (!alive) return;  
+        var el = document.createElement("span");  
+        el.textContent = Math.random() > 0.5 ? "🔥" : "💀";  
+        el.style.position = "absolute";  
+        el.style.left = Math.random() * 100 + "%";  
+        el.style.top = "-30px";  
+        el.style.fontSize = 12 + Math.random() * 14 + "px";  
+        el.style.opacity = 0.4 + Math.random() * 0.3;  
+        var dur = 6 + Math.random() * 5;  
+        el.style.animation = "petal-fall " + dur + "s linear forwards";  
+        host.appendChild(el);  
+        setTimeout(function () { el.remove(); }, dur * 1000 + 100);  
+      }  
+      var interval = setInterval(spawn, 500);  
+      return function () { alive = false; clearInterval(interval); };  
+    }, [mode]);  
+  
+    function handleLog() {  
+      if (!canLogNow || loggedToday) return;  
+      var amt = Number(logAmount);  
+      if (!amt && amt !== 0) return;  
+      var next = Object.assign({}, data, {  
+        logs: data.logs.filter(function (l) { return l.date !== todayStr(); }).concat([  
+          { date: todayStr(), amount: amt, loggedAt: new Date().toISOString() },  
+        ]),  
+      });  
+      persist(next);  
+      setLogAmount("");  
+    }  
+  
+    function startChallenge(cfg) {  
+      persist(Object.assign({}, data, cfg, { startDate: cfg.startDate || todayStr(), logs: [] }));  
+      setEditing(false);  
+    }  
+  
+    function saveConfig(cfg) {  
+      persist(Object.assign({}, data, cfg));  
+      setEditing(false);  
+    }  
+  
+    /* ---------- money-ops: vault, deposits, withdrawals ---------- */  
+    var vaultBalance = 0;  
+    data.logs.forEach(function (l) {  
+      var amt = Number(l.amount || 0);  
+      if (amt > VAULT_THRESHOLD) vaultBalance += amt - VAULT_THRESHOLD;  
+    });  
+    var totalDeposited = data.deposits.reduce(function (s, d) { return s + Number(d.amount || 0); }, 0);  
+    var cashWithdrawals = data.withdrawals.filter(function (w) { return w.type === "cash"; });  
+    var profitWithdrawals = data.withdrawals.filter(function (w) { return w.type !== "cash"; });  
+    var totalCashWithdrawn = cashWithdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);  
+    var totalProfitWithdrawn = profitWithdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);  
+    // Current funds is the fixed capital plus deposits, minus CASH withdrawals only.  
+    // Profit withdrawals just sweep already-earned daily profit out — that profit  
+    // was never part of the capital base, so it must not reduce it here.  
+    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited - totalCashWithdrawn;  
+    // Total profit is simply the sum of every logged day, unmodified (whether or not it's been swept into a profit withdrawal).  
+    var totalProfitLogged = loggedFund;  
+    // Estimate: current funds plus the full 100-day completion estimate (completionValue computed above).  
+    var estimate100 = currentFundsOps + completionValue;  
+    var vaultReviewCount = data.withdrawals.length % 15;  
+  
+    function nowParts() {  
+      var d = new Date();  
+      var h = d.getHours(), m = d.getMinutes();  
+      var ampm = h >= 12 ? "pm" : "am";  
+      var h12 = h % 12; if (h12 === 0) h12 = 12;  
+      return { date: todayStr(), time: h12 + ":" + pad(m) + " " + ampm };  
+    }  
+  
+    function addDeposit(amount, passcode) {  
+      if (passcode !== DEPOSIT_PASSCODE) return "Wrong passcode.";  
+      var amt = Number(amount);  
+      if (!amt || amt <= 0) return "Enter a valid amount.";  
+      var np = nowParts();  
+      persist(Object.assign({}, data, {  
+        deposits: data.deposits.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS" }]),  
+      }));  
+      return null;  
+    }  
+  
+    function addWithdrawal(amount, passcode, type) {  
+      if (!data.withdrawalAccount) return "Set a withdrawal account first.";  
+      if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";  
+      var amt = Number(amount);  
+      if (!amt || amt <= 0) return "Enter a valid amount.";  
+      var wType = type === "profit" ? "profit" : "cash";  
+      if (wType === "cash" && amt > currentFundsOps) return "That's more than your current funds.";  
+      if (wType === "profit" && amt > (totalProfitLogged - totalProfitWithdrawn)) return "That's more than your available (un-withdrawn) profit.";  
+      var np = nowParts();  
+      persist(Object.assign({}, data, {  
+        withdrawals: data.withdrawals.concat([{ date: np.date, time: np.time, amount: amt, status: "SUCCESS", type: wType }]),  
+      }));  
+      return null;  
+    }  
+  
+    function saveWithdrawalAccount(method, fields, passcode) {  
+      if (passcode !== WITHDRAW_PASSCODE) return "Wrong passcode.";  
+      if (!method) return "Choose a method.";  
+      fields = fields || {};  
+      if (method === "upi" && !fields.upiId) return "Enter your UPI ID.";  
+      if (method === "bank" && (!fields.accountNumber || !fields.bankName || !fields.ifsc || !fields.receiverName)) {  
+        return "Fill in account number, bank name, IFSC code, and receiver name.";  
+      }  
+      if ((method === "usdt" || method === "tron") && !fields.walletAddress) return "Enter a wallet address.";  
+      persist(Object.assign({}, data, { withdrawalAccount: { method: method, fields: fields } }));  
+      return null;  
+    }  
+  
+    if (!unlocked) return h(PatternLockView, { onUnlock: function () { setUnlocked(true); } });  
+    if (!booted) return h(BootSequenceView, { onDone: function () { setBooted(true); } });  
+    if (!loaded) return null;  
+  
+    var body;  
+    if (!data.startDate && !editing) {  
+      body = h(SetupView, { data: data, onStart: startChallenge });  
+    } else if (mode === "broken") {  
+      body = h(RedRegretView, {  
+        data: data, remainingDays: remainingDays, projectedFund: projectedFund, gapSinceLast: gapSinceLast,  
+        logAmount: logAmount, setLogAmount: setLogAmount, canLogNow: canLogNow, onLog: handleLog, petalHostRef: petalHostRef,  
+      });  
+    } else if (mode === "loss") {  
+      body = h(LossPunishView, {  
+        data: data, lastLog: lastLog, hoursLeft: hoursLeft, projectedFund: projectedFund,  
+        remainingDays: remainingDays, petalHostRef: petalHostRef,  
+      });  
+    } else if (showFunds) {  
+      body = h(FundsView, {  
+        data: data, currentFundsOps: currentFundsOps, totalProfitLogged: totalProfitLogged, estimate100: estimate100,  
+        vaultBalance: vaultBalance, vaultReviewCount: vaultReviewCount, onBack: function () { setShowFunds(false); },  
+        addDeposit: addDeposit, addWithdrawal: addWithdrawal, saveWithdrawalAccount: saveWithdrawalAccount,  
+        totalCashWithdrawn: totalCashWithdrawn, totalProfitWithdrawn: totalProfitWithdrawn,  
+        cashWithdrawals: cashWithdrawals, profitWithdrawals: profitWithdrawals,  
+      });  
+    } else if (showCalendar) {  
+      body = h(CalendarView, { data: data, targetDate: targetDate, onBack: function () { setShowCalendar(false); } });  
+    } else {  
+      body = h(GreenView, {  
+        data: data, currentStreak: currentStreak, remainingDays: remainingDays, loggedFund: loggedFund,  
+        projectedFund: projectedFund, completionValue: completionValue, targetDate: targetDate, loggedToday: loggedToday,  
+        showFestive: showFestive, hoursLeft: hoursLeft, previewFestive: previewFestive, setPreviewFestive: setPreviewFestive,  
+        canLogNow: canLogNow, logAmount: logAmount, setLogAmount: setLogAmount, onLog: handleLog, editing: editing,  
+        setEditing: setEditing, canEditConfig: canEditConfig, unlockDate: unlockDate, saveConfig: saveConfig,  
+        petalHostRef: petalHostRef, crackerHostRef: crackerHostRef, onOpenFunds: function () { setShowFunds(true); },  
+        onOpenCalendar: function () { setShowCalendar(true); },  
+      });  
+    }  
+  
+    return h("div", { style: { fontFamily: "'Inter', sans-serif", minHeight: "100vh" } }, body);  
+  }  
+  
+  try {  
+    var root = ReactDOM.createRoot(document.getElementById("root"));  
+    root.render(h(FundStreakTracker));  
+  } catch (e) {  
+    document.getElementById("root").innerHTML =  
+      '<div style="color:#FFD2D2;background:#3D0000;font-family:monospace;font-size:12px;padding:20px;white-space:pre-wrap;">Render failed: ' +  
+      (e && e.message ? e.message : String(e)) + '</div>';  
+  }  
+})();  
+</script>  </body>  
 </html>
