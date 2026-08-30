@@ -51,27 +51,45 @@
   /* ---------- storage shim (localStorage instead of Claude's window.storage) ---------- */
   var storage = {
     get: function (key) {
-      try {
-        var v = localStorage.getItem(key);
-        return Promise.resolve(v !== null ? { key: key, value: v } : null);
-      } catch (e) {
-        return Promise.resolve(null);
+      // Prefer Claude's real persistent artifact storage (survives across
+      // render-link sessions) when this is running inside the Claude viewer.
+      if (typeof window !== "undefined" && window.storage && typeof window.storage.get === "function") {
+        return window.storage.get(key, false)
+          .then(function (res) { return res ? { key: key, value: res.value } : null; })
+          .catch(function () { return localStorageGet(key); });
       }
+      return localStorageGet(key);
     },
     set: function (key, value) {
-      try {
-        localStorage.setItem(key, value);
-        // read back immediately to confirm the write actually stuck (some
-        // sandboxed/private-browsing contexts accept setItem silently but
-        // don't persist it, or wipe it on the very next read)
-        var check = localStorage.getItem(key);
-        if (check !== value) return Promise.resolve(null);
-        return Promise.resolve({ key: key, value: value });
-      } catch (e) {
-        return Promise.resolve(null);
+      if (typeof window !== "undefined" && window.storage && typeof window.storage.set === "function") {
+        return window.storage.set(key, value, false)
+          .then(function (res) { return res ? { key: key, value: value } : localStorageSet(key, value); })
+          .catch(function () { return localStorageSet(key, value); });
       }
+      return localStorageSet(key, value);
     },
   };
+  function localStorageGet(key) {
+    try {
+      var v = localStorage.getItem(key);
+      return Promise.resolve(v !== null ? { key: key, value: v } : null);
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  }
+  function localStorageSet(key, value) {
+    try {
+      localStorage.setItem(key, value);
+      // read back immediately to confirm the write actually stuck (some
+      // sandboxed/private-browsing contexts accept setItem silently but
+      // don't persist it, or wipe it on the very next read)
+      var check = localStorage.getItem(key);
+      if (check !== value) return Promise.resolve(null);
+      return Promise.resolve({ key: key, value: value });
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  }
 
   /* ---------- helpers ---------- */
   function pad(n) { return String(n).padStart(2, "0"); }
@@ -194,6 +212,7 @@
   var CASH_WITHDRAWAL_TEMPLATE = [
     { date: "2026-08-05", time: "03:13 pm", amount: 30000, status: "SUCCESS", type: "cash" },
     { date: "2026-08-16", time: "09:11 pm", amount: 30000, status: "SUCCESS", type: "cash" },
+    { date: "2026-08-31", time: "09:00 pm", amount: 40000, status: "SUCCESS", type: "cash" },
   ];
 
   var DEFAULT_STATE = {
