@@ -159,7 +159,7 @@
   var STORAGE_KEY = "fund-streak:data";
   var LOG_HOUR = 22; // 10 PM
   var FIXED_DAILY_TARGET = 3000; // not user-editable
-  var FIXED_CAPITAL = 35000;
+  var FIXED_CAPITAL = 12000;
 
   /* ---------- withdrawal amounts derived from the daily-profit generator ----------
      Each withdrawal's amount is the sum of every day's generated profit from the
@@ -212,8 +212,19 @@
   var CASH_WITHDRAWAL_TEMPLATE = [
     { date: "2026-08-05", time: "03:13 pm", amount: 30000, status: "SUCCESS", type: "cash" },
     { date: "2026-08-16", time: "09:11 pm", amount: 30000, status: "SUCCESS", type: "cash" },
-    { date: "2026-08-31", time: "09:00 pm", amount: 40000, status: "SUCCESS", type: "cash" },
+    { date: "2026-08-20", time: "07:00 pm", amount: 12000, status: "SUCCESS", type: "cash" },
+    { date: "2026-08-30", time: "09:00 pm", amount: 40000, status: "SUCCESS", type: "cash" },
   ];
+
+  /* Profit withdrawals entered manually (not derived from the daily-profit
+     sweep formula) — recorded exactly at the amount/date/time given. */
+  var MANUAL_PROFIT_WITHDRAWAL_TEMPLATE = [
+    { date: "2026-08-30", time: "09:10 pm", amount: 8454, status: "SUCCESS", type: "profit" },
+  ];
+
+  /* A deposit that happened but is intentionally not shown as a separate line
+     in the deposit history — its value still counts toward current funds. */
+  var HIDDEN_DEPOSIT_TOTAL = 35000;
 
   var DEFAULT_STATE = {
     currentFund: FIXED_CAPITAL,
@@ -226,8 +237,10 @@
       { date: "2026-07-24", time: "10:43 am", amount: 30000, status: "SUCCESS" },
       { date: "2026-08-06", time: "02:19 pm", amount: 30000, status: "SUCCESS" },
       { date: "2026-08-20", time: "07:00 pm", amount: 12000, status: "SUCCESS" },
+      { date: "2026-08-31", time: "10:48 am", amount: 19000, status: "SUCCESS" },
+      { date: "2026-08-31", time: "11:30 am", amount: 4000, status: "SUCCESS" },
     ],
-    withdrawals: buildWithdrawalsFromTemplate(WITHDRAWAL_TEMPLATE, "2026-07-24").concat(CASH_WITHDRAWAL_TEMPLATE),
+    withdrawals: buildWithdrawalsFromTemplate(WITHDRAWAL_TEMPLATE, "2026-07-24").concat(CASH_WITHDRAWAL_TEMPLATE).concat(MANUAL_PROFIT_WITHDRAWAL_TEMPLATE),
   };
 
 
@@ -1925,10 +1938,11 @@
     var profitWithdrawals = data.withdrawals.filter(function (w) { return w.type !== "cash"; });
     var totalCashWithdrawn = cashWithdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
     var totalProfitWithdrawn = profitWithdrawals.reduce(function (s, w) { return s + Number(w.amount || 0); }, 0);
-    // Current funds is the fixed capital plus deposits, minus CASH withdrawals only.
+    // Current funds is the fixed capital plus deposits (including the hidden
+    // deposit not shown in history), minus CASH withdrawals only.
     // Profit withdrawals just sweep already-earned daily profit out — that profit
     // was never part of the capital base, so it must not reduce it here.
-    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited - totalCashWithdrawn;
+    var currentFundsOps = Number(data.currentFund || 0) + totalDeposited + HIDDEN_DEPOSIT_TOTAL - totalCashWithdrawn;
     // Total profit is simply the sum of every logged day, unmodified (whether or not it's been swept into a profit withdrawal).
     var totalProfitLogged = loggedFund;
     // Estimate: current funds plus the full 100-day completion estimate (completionValue computed above).
