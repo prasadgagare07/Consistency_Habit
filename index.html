@@ -1094,7 +1094,8 @@
       totalCashWithdrawn = props.totalCashWithdrawn, totalProfitWithdrawn = props.totalProfitWithdrawn,
       cashWithdrawals = props.cashWithdrawals, profitWithdrawals = props.profitWithdrawals,
       lastSavedAt = props.lastSavedAt, storageBroken = props.storageBroken,
-      exportBackup = props.exportBackup, restoreBackup = props.restoreBackup;
+      exportBackup = props.exportBackup, restoreBackup = props.restoreBackup,
+      refreshFromStorage = props.refreshFromStorage, syncing = props.syncing;
 
     var sRestoreMsg = useState(""), restoreMsg = sRestoreMsg[0], setRestoreMsg = sRestoreMsg[1];
     var fileInputRef = useRef(null);
@@ -1203,6 +1204,15 @@
           h(
             "div",
             { style: { display: "flex", gap: 8 } },
+            h(
+              "button",
+              {
+                onClick: refreshFromStorage,
+                disabled: syncing,
+                style: { background: "transparent", border: "1px solid rgba(127,224,170,0.35)", color: syncing ? "#5FA57F" : "#7FE0AA", borderRadius: 8, padding: "4px 8px", fontSize: 11, cursor: syncing ? "default" : "pointer" },
+              },
+              syncing ? "⏳ Syncing…" : "🔄 Sync"
+            ),
             h(
               "button",
               {
@@ -1692,12 +1702,44 @@
       return function () { clearInterval(t); };
     }, []);
 
+    var ssync = useState(false), syncing = ssync[0], setSyncing = ssync[1];
+    var lastWriteAtRef = useRef(0);
+    function refreshFromStorage(silent) {
+      if (!silent) setSyncing(true);
+      return storage.get(STORAGE_KEY).then(function (res) {
+        if (res && res.value) {
+          try {
+            setData(Object.assign({}, DEFAULT_STATE, JSON.parse(res.value)));
+            setLastSavedAt(new Date());
+          } catch (e) {}
+        }
+        if (!silent) setSyncing(false);
+      }).catch(function () { if (!silent) setSyncing(false); });
+    }
+
+    // Background auto-sync: quietly pulls the latest saved data every few
+    // seconds so changes made on another device show up without a manual tap.
+    // Skipped for a few seconds right after our own local save, so an
+    // in-flight write can't get clobbered by a read that hasn't caught up yet.
+    useEffect(function () {
+      var t = setInterval(function () {
+        if (Date.now() - lastWriteAtRef.current < 5000) return;
+        refreshFromStorage(true);
+      }, 6000);
+      return function () { clearInterval(t); };
+    }, []);
+
+    var writeQueueRef = useRef(Promise.resolve());
     var persist = useCallback(function (next) {
       setData(next);
-      storage.set(STORAGE_KEY, JSON.stringify(next)).then(function (res) {
-        if (res) { setLastSavedAt(new Date()); setStorageBroken(false); }
-        else { setStorageBroken(true); }
-      }).catch(function (e) { console.error("save failed", e); setStorageBroken(true); });
+      lastWriteAtRef.current = Date.now();
+      writeQueueRef.current = writeQueueRef.current
+        .then(function () { return storage.set(STORAGE_KEY, JSON.stringify(next)); })
+        .then(function (res) {
+          if (res) { setLastSavedAt(new Date()); setStorageBroken(false); }
+          else { setStorageBroken(true); }
+        })
+        .catch(function (e) { console.error("save failed", e); setStorageBroken(true); });
     }, []);
 
     var sortedLogs = data.logs.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
@@ -2001,6 +2043,7 @@
         totalCashWithdrawn: totalCashWithdrawn, totalProfitWithdrawn: totalProfitWithdrawn,
         cashWithdrawals: cashWithdrawals, profitWithdrawals: profitWithdrawals,
         lastSavedAt: lastSavedAt, storageBroken: storageBroken, exportBackup: exportBackup, restoreBackup: restoreBackup,
+        refreshFromStorage: refreshFromStorage, syncing: syncing,
       });
     } else if (showCalendar) {
       body = h(CalendarView, { data: data, targetDate: targetDate, onBack: function () { setShowCalendar(false); } });
