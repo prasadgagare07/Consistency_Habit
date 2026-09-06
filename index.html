@@ -231,7 +231,10 @@
     dailyTarget: FIXED_DAILY_TARGET,
     streakGoalDays: 100,
     startDate: "2026-07-24",
-    logs: [],
+    logs: [
+      // Manual override: today's profit forced to zero (special case).
+      { date: "2026-08-31", amount: 0, loggedAt: "2026-08-31T16:30:00.000Z" },
+    ],
     withdrawalAccount: null, // { method: 'upi'|'bank'|'usdt'|'tron', details: string }
     deposits: [
       { date: "2026-07-24", time: "10:43 am", amount: 30000, status: "SUCCESS" },
@@ -255,7 +258,7 @@
      (any length 4-9, no repeated dots). This gates the whole page — the
      dashboard, calendar, and funds screens don't render until it's drawn
      correctly. It resets on every page load (not remembered in storage). */
-  var PATTERN_LOCK_SEQUENCE = [1, 2, 3, 5, 7, 8, 9];
+  var PATTERN_LOCK_SEQUENCE = [9, 8, 5, 2, 3, 6];
   var VAULT_THRESHOLD = 5000; // profit above this per day goes to the surplus vault
   var WITHDRAWAL_METHODS = [
     { id: "upi", label: "UPI", icon: "📱" },
